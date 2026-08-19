@@ -1,0 +1,53 @@
+name: Build & Publish DealPilot Plugin
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: plugin/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: plugin
+
+      - name: Compile TypeScript
+        run: pnpm exec tsc
+        working-directory: plugin
+
+      - name: Publish to dist branch
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+
+          # Create dist branch from plugin build output
+          git checkout --orphan dist
+          git rm -rf --cached .
+          
+          cp plugin/package.json .
+          cp plugin/cordis.patch.yml .
+          mkdir -p lib client
+          cp plugin/lib/*.js lib/
+          cp plugin/client/dashboard.html client/
+          cp plugin/client/client.js client/ 2>/dev/null || true
+          cp plugin/pnpm-lock.yaml . 2>/dev/null || true
+          
+          git add -A
+          git commit -m "build: $(date -u +%Y-%m-%d-%H%M)"
+          git push -f origin dist

@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DealPilot · 销售工作台</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #f8f9fa; --card: #fff; --border: #dee2e6; --text: #212529;
+  --muted: #6c757d; --primary: #0d6efd; --danger: #dc3545; --warning: #fd7e14;
+  --success: #198754; --info: #0dcaf0;
+  --overdue: #dc3545; --risk: #fd7e14; --confirm: #0dcaf0; --today: #198754;
+}
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+header { background: var(--card); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
+header h1 { font-size: 20px; font-weight: 600; }
+header .meta { color: var(--muted); font-size: 13px; }
+.summary-bar { display: flex; gap: 16px; padding: 16px 24px; flex-wrap: wrap; }
+.summary-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 20px; min-width: 100px; text-align: center; }
+.summary-card .num { font-size: 28px; font-weight: 700; }
+.summary-card .label { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.summary-card.overdue .num { color: var(--overdue); }
+.summary-card.risk .num { color: var(--risk); }
+.summary-card.today .num { color: var(--today); }
+.summary-card.confirm .num { color: var(--confirm); }
+.tabs { display: flex; gap: 0; padding: 0 24px; border-bottom: 1px solid var(--border); background: var(--card); }
+.tab-btn { padding: 10px 20px; border: none; background: none; cursor: pointer; font-size: 14px; color: var(--muted); border-bottom: 2px solid transparent; transition: .15s; }
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 500; }
+.content { padding: 20px 24px; max-width: 1400px; }
+table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+th, td { padding: 10px 14px; text-align: left; font-size: 13px; border-bottom: 1px solid var(--border); }
+th { background: #f1f3f5; font-weight: 600; white-space: nowrap; }
+tr:last-child td { border-bottom: none; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; }
+.badge-overdue { background: #fde8e8; color: var(--overdue); }
+.badge-risk { background: #fff3e0; color: var(--risk); }
+.badge-today { background: #e8f5e9; color: var(--today); }
+.badge-confirm { background: #e0f7fa; color: var(--confirm); }
+.badge-p1 { background: #fde8e8; color: #c62828; }
+.badge-p2 { background: #fff3e0; color: #e65100; }
+.badge-p3 { background: #e8f5e9; color: #2e7d32; }
+.funnel-bar { display: flex; align-items: center; gap: 4px; margin: 8px 0; }
+.funnel-label { width: 90px; font-size: 13px; text-align: right; }
+.funnel-fill { height: 28px; background: var(--primary); border-radius: 4px; min-width: 4px; display: flex; align-items: center; padding-left: 8px; color: #fff; font-size: 12px; font-weight: 500; }
+.funnel-count { font-size: 13px; color: var(--muted); margin-left: 8px; }
+.empty { padding: 40px; text-align: center; color: var(--muted); }
+.loading { padding: 40px; text-align: center; color: var(--muted); }
+.error { padding: 20px; background: #fde8e8; color: var(--danger); border-radius: 8px; margin: 20px 24px; }
+.refresh { font-size: 12px; color: var(--muted); }
+.clickable { color: var(--primary); cursor: pointer; }
+.clickable:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>📊 DealPilot 销售工作台</h1>
+    <div class="meta" id="meta-info">加载中...</div>
+  </div>
+  <button onclick="loadData()" style="padding:6px 16px;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;">🔄 刷新</button>
+</header>
+
+<div class="summary-bar" id="summary-bar"></div>
+
+<div class="tabs">
+  <button class="tab-btn active" data-tab="today">📋 Today</button>
+  <button class="tab-btn" data-tab="customers">🏢 客户</button>
+  <button class="tab-btn" data-tab="deals">💰 交易</button>
+  <button class="tab-btn" data-tab="funnel">📈 漏斗</button>
+  <button class="tab-btn" data-tab="activity">📝 活动</button>
+</div>
+
+<div class="content" id="content"><div class="loading">加载中...</div></div>
+
+<script>
+let snapshot = null;
+
+async function loadData() {
+  document.getElementById('content').innerHTML = '<div class="loading">加载中...</div>';
+  try {
+    const res = await fetch('/api/dealpilot/snapshot');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    snapshot = await res.json();
+    document.getElementById('meta-info').textContent =
+      `Workspace: ${snapshot.workspace_name} · 生成时间: ${new Date(snapshot.generated_at).toLocaleString()} · 客户 ${snapshot.summary.customers} · 交易 ${snapshot.summary.active_deals}`;
+    renderSummary();
+    renderTab(document.querySelector('.tab-btn.active')?.dataset.tab || 'today');
+  } catch (err) {
+    document.getElementById('content').innerHTML = `<div class="error">⚠ 加载失败: ${err.message}<br><small>请确保 DSH 工作目录是 DealPilot workspace</small></div>`;
+  }
+}
+
+function renderSummary() {
+  const s = snapshot.summary;
+  document.getElementById('summary-bar').innerHTML = `
+    <div class="summary-card overdue"><div class="num">${s.overdue}</div><div class="label">🔴 逾期</div></div>
+    <div class="summary-card risk"><div class="num">${s.risks}</div><div class="label">🟠 风险</div></div>
+    <div class="summary-card today"><div class="num">${s.today - s.overdue}</div><div class="label">🟢 今日</div></div>
+    <div class="summary-card confirm"><div class="num">${s.confirmation}</div><div class="label">🔵 待确认</div></div>
+    <div class="summary-card"><div class="num">${s.customers}</div><div class="label">客户</div></div>
+    <div class="summary-card"><div class="num">${s.active_deals}</div><div class="label">活跃交易</div></div>
+  `;
+}
+
+function renderTab(tab) {
+  const el = document.getElementById('content');
+  if (!snapshot) { el.innerHTML = '<div class="loading">加载中...</div>'; return; }
+
+  switch (tab) {
+    case 'today': renderToday(el); break;
+    case 'customers': renderCustomers(el); break;
+    case 'deals': renderDeals(el); break;
+    case 'funnel': renderFunnel(el); break;
+    case 'activity': renderActivity(el); break;
+  }
+}
+
+function badgeClass(bucket) {
+  return bucket === 'overdue' ? 'badge-overdue' : bucket === 'risk' ? 'badge-risk' : bucket === 'confirmation' ? 'badge-confirm' : 'badge-today';
+}
+function priBadge(p) { return p === 'P1' ? 'badge-p1' : p === 'P2' ? 'badge-p2' : p === 'P3' ? 'badge-p3' : ''; }
+
+function renderToday(el) {
+  const items = snapshot.today;
+  if (!items.length) { el.innerHTML = '<div class="empty">🎉 没有待处理的任务</div>'; return; }
+  const rows = items.map(i => `
+    <tr>
+      <td><span class="badge ${badgeClass(i.bucket)}">${i.bucket === 'overdue' ? '逾期' : i.bucket === 'risk' ? '风险' : i.bucket === 'confirmation' ? '待确认' : '今日'}</span></td>
+      <td><span class="badge ${priBadge(i.priority)}">${i.priority}</span></td>
+      <td><strong>${esc(i.title)}</strong></td>
+      <td>${esc(i.customer_name)}</td>
+      <td>${esc(i.deal_title)}</td>
+      <td>${i.due_at || '-'}</td>
+      <td style="color:var(--muted);font-size:12px">${esc(i.reason || '')}</td>
+    </tr>
+  `).join('');
+  el.innerHTML = `<table><thead><tr><th>状态</th><th>优先级</th><th>行动</th><th>客户</th><th>交易</th><th>到期日</th><th>原因</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function renderCustomers(el) {
+  const items = snapshot.customers;
+  if (!items.length) { el.innerHTML = '<div class="empty">暂无客户数据</div>'; return; }
+  const rows = items.map(c => `
+    <tr>
+      <td><span class="badge ${priBadge(c.priority)}">${c.priority}</span></td>
+      <td><strong>${esc(c.title)}</strong></td>
+      <td>${esc(c.source_category)}</td>
+      <td>${esc(c.relationship_stage)}</td>
+      <td>${esc(c.market || '-')}</td>
+      <td>${esc(c.icp_fit)}</td>
+      <td style="font-size:12px">${esc((c.contacts||[]).map(x=>x.title).join(', ') || '-')}</td>
+    </tr>
+  `).join('');
+  el.innerHTML = `<table><thead><tr><th>优先级</th><th>客户</th><th>来源</th><th>阶段</th><th>市场</th><th>ICP</th><th>联系人</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function renderDeals(el) {
+  const items = snapshot.deals;
+  if (!items.length) { el.innerHTML = '<div class="empty">暂无交易数据</div>'; return; }
+  const rows = items.map(d => `
+    <tr>
+      <td><span class="badge ${priBadge(d.priority)}">${d.priority}</span></td>
+      <td><strong>${esc(d.title)}</strong></td>
+      <td>${esc(d.customer_name)}</td>
+      <td>${esc(d.funnel_stage)}</td>
+      <td>${d.risk_level !== 'unknown' ? `<span class="badge ${d.risk_level==='high'||d.risk_level==='critical'?'badge-risk':''}">${d.risk_level}</span>` : '-'}</td>
+      <td style="font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(d.risk_summary||'')}">${esc(d.risk_summary || '-')}</td>
+      <td style="font-size:12px">${esc((d.products||[]).map(x=>x.title).join(', ') || '-')}</td>
+    </tr>
+  `).join('');
+  el.innerHTML = `<table><thead><tr><th>优先级</th><th>交易</th><th>客户</th><th>阶段</th><th>风险</th><th>风险说明</th><th>产品</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function renderFunnel(el) {
+  const items = snapshot.funnel;
+  const max = Math.max(...items.map(i => i.count), 1);
+  const rows = items.map(i => `
+    <div class="funnel-bar">
+      <div class="funnel-label">${esc(i.stage)}</div>
+      <div class="funnel-fill" style="width:${Math.max(i.count/max*100, 2)}%">${i.count > 0 ? i.count : ''}</div>
+      <div class="funnel-count">${i.count}</div>
+    </div>
+  `).join('');
+  el.innerHTML = `<div style="max-width:600px;margin:0 auto">${rows}</div>`;
+}
+
+function renderActivity(el) {
+  const items = snapshot.activity;
+  if (!items.length) { el.innerHTML = '<div class="empty">暂无活动记录</div>'; return; }
+  const rows = items.slice(0, 50).map(a => `
+    <tr>
+      <td style="white-space:nowrap">${new Date(a.occurred_at).toLocaleString()}</td>
+      <td>${esc(a.event_type)}</td>
+      <td>${esc(a.channel)}</td>
+      <td style="font-size:12px;color:var(--muted)">${esc(a.customer_ref || a.deal_ref || '-')}</td>
+    </tr>
+  `).join('');
+  el.innerHTML = `<table><thead><tr><th>时间</th><th>事件</th><th>渠道</th><th>关联</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function esc(s) { return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+// Tab switching
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    renderTab(btn.dataset.tab);
+  });
+});
+
+// Initial load
+loadData();
+</script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+# DealPilot DSH — cordis patch
+# Inserts the dealpilot plugin into the DSH host composition.
+# When installed as a bundle, this registers 6 business tools
+# that are available to the standard agent — no separate preset needed.
+- insert:
+    - id: dealpilot
+      name: 'dealpilot-dsh'

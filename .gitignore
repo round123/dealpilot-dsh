@@ -2,3 +2,4 @@ node_modules/
 *.d.ts
 *.js.map
 .DS_Store
+tests/artifacts/

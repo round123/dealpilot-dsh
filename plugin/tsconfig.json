@@ -9,6 +9,6 @@
     "declaration": true,
     "sourceMap": false
   },
-  "include": ["lib/**/*.ts", "client/**/*.ts", "client/**/*.tsx"],
+  "include": ["lib/**/*.ts"],
   "exclude": ["node_modules"]
 }

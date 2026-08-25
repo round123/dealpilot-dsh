@@ -4,6 +4,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as yaml from 'js-yaml';
+import { resolveWorkspacePath } from './workspace-manager.js';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -180,11 +181,7 @@ export function normalizeRef(workspace: string, basePath: string, value: string)
  * Priority: ctx.config.defaultWorkspace → DSH cwd → process.cwd()
  */
 export function resolveWorkspace(config?: Record<string, any>): string {
-  const fromConfig = config?.defaultWorkspace;
-  if (fromConfig && typeof fromConfig === 'string') return fromConfig;
-
-  // Fall back to current working directory (DSH sets this to the session workspace)
-  return process.cwd();
+  return resolveWorkspacePath(config);
 }
 
 export async function validateWorkspace(workspace: string): Promise<boolean> {

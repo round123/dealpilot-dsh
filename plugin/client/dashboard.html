@@ -24,8 +24,8 @@ header .meta { color: var(--muted); font-size: 13px; }
 .summary-card.risk .num { color: var(--risk); }
 .summary-card.today .num { color: var(--today); }
 .summary-card.confirm .num { color: var(--confirm); }
-.tabs { display: flex; gap: 0; padding: 0 24px; border-bottom: 1px solid var(--border); background: var(--card); }
-.tab-btn { padding: 10px 20px; border: none; background: none; cursor: pointer; font-size: 14px; color: var(--muted); border-bottom: 2px solid transparent; transition: .15s; }
+.tabs { display: flex; gap: 0; padding: 0 24px; border-bottom: 1px solid var(--border); background: var(--card); overflow-x: auto; }
+.tab-btn { flex: 0 0 auto; white-space: nowrap; padding: 10px 20px; border: none; background: none; cursor: pointer; font-size: 14px; color: var(--muted); border-bottom: 2px solid transparent; transition: .15s; }
 .tab-btn:hover { color: var(--text); }
 .tab-btn.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 500; }
 .content { padding: 20px 24px; max-width: 1400px; }
@@ -51,6 +51,10 @@ tr:last-child td { border-bottom: none; }
 .refresh { font-size: 12px; color: var(--muted); }
 .clickable { color: var(--primary); cursor: pointer; }
 .clickable:hover { text-decoration: underline; }
+.product-nav { display: flex; align-items: center; gap: 8px; }
+.conversation-link { color: var(--primary); text-decoration: none; font-size: 13px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; }
+.conversation-link:hover { background: #f1f3f5; }
+.onboarding { margin: 0 24px 16px; padding: 14px 16px; background: #e7f5ff; border: 1px solid #a5d8ff; border-radius: 8px; color: #1864ab; }
 </style>
 </head>
 <body>
@@ -60,9 +64,13 @@ tr:last-child td { border-bottom: none; }
     <h1>📊 DealPilot 销售工作台</h1>
     <div class="meta" id="meta-info">加载中...</div>
   </div>
-  <button onclick="loadData()" style="padding:6px 16px;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;">🔄 刷新</button>
+  <div class="product-nav">
+    <a class="conversation-link" href="/" title="使用 DeepSeek Harness 默认对话">💬 返回对话</a>
+    <button onclick="loadData()" style="padding:6px 16px;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;">🔄 刷新</button>
+  </div>
 </header>
 
+<div class="onboarding" id="onboarding" hidden></div>
 <div class="summary-bar" id="summary-bar"></div>
 
 <div class="tabs">
@@ -81,11 +89,17 @@ let snapshot = null;
 async function loadData() {
   document.getElementById('content').innerHTML = '<div class="loading">加载中...</div>';
   try {
-    const res = await fetch('/api/dealpilot/snapshot');
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    snapshot = await res.json();
+    let bootstrap = null;
+    const bootstrapRes = await fetch('/api/dealpilot/bootstrap');
+    if (bootstrapRes.ok) bootstrap = await bootstrapRes.json();
+    const res = bootstrap?.snapshot ? null : await fetch('/api/dealpilot/snapshot');
+    if (res && !res.ok) throw new Error('HTTP ' + res.status);
+    snapshot = bootstrap?.snapshot || await res.json();
     document.getElementById('meta-info').textContent =
-      `Workspace: ${snapshot.workspace_name} · 生成时间: ${new Date(snapshot.generated_at).toLocaleString()} · 客户 ${snapshot.summary.customers} · 交易 ${snapshot.summary.active_deals}`;
+      `Workspace: ${bootstrap?.workspace?.name || snapshot.workspace_name} · 生成时间: ${new Date(snapshot.generated_at).toLocaleString()} · 客户 ${snapshot.summary.customers} · 交易 ${snapshot.summary.active_deals}`;
+    const onboarding = document.getElementById('onboarding');
+    onboarding.hidden = !(bootstrap?.created && snapshot.summary.customers === 0 && snapshot.summary.active_deals === 0);
+    if (!onboarding.hidden) onboarding.textContent = '工作区已准备好。可以返回对话，让 Agent 导入客户资料或创建第一笔交易。';
     renderSummary();
     renderTab(document.querySelector('.tab-btn.active')?.dataset.tab || 'today');
   } catch (err) {

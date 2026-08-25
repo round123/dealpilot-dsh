@@ -1,7 +1,7 @@
 # DealPilot DSH
 
 > AI 原生销售工作台 — 纯 DSH Cordis 插件。
-> 对话管理客户与交易，独立 Dashboard 掌握全局。
+> `/` 保持原始 DeepSeek Harness 对话体验；`/dealpilot` 提供带 Workspace 和业务视图的 DealPilot 对话工作台。
 
 ## 架构
 
@@ -22,9 +22,10 @@ dealpilot-dsh/
 │   │   ├── import-tool.ts
 │   │   ├── search-tool.ts
 │   │   └── whatsapp-tool.ts
-│   └── client/                 ← Dashboard UI
-│       ├── client.ts           ← 客户端入口（待开发）
-│       └── dashboard.html      ← 独立看板页面 ✅
+│   └── client/                 ← DealPilot 工作台 UI
+│       ├── client.ts           ← 默认 DSH 无注入客户端入口
+│       ├── dealpilot-shell.html ← /dealpilot 页面 Shell
+│       └── dashboard.html      ← 旧版兼容页面
 ├── docs/                       ← 设计文档
 ├── extension/                  ← Chrome 扩展（待开发）
 └── workspace-template/         ← OKF Workspace 模板
@@ -42,11 +43,11 @@ dealpilot-dsh/
 
 Agent 调用 `dealpilot_*` 工具，返回格式化结果。
 
-### 方式 2：独立 Dashboard（方案 B）
+### 方式 2：DealPilot 工作台
 
-安装后访问 **`http://127.0.0.1:3080/dealpilot`**
+安装后访问 **`http://127.0.0.1:3080/dealpilot`**。从左侧选择 DSH Workspace；已有 DealPilot 文件会自动复用，空 Workspace 可在页面中显式初始化。
 
-5 个标签页：Today · 客户 · 交易 · 漏斗 · 活动，纯前端渲染，不调 LLM。
+DealPilot 页面复用原生 DSH 对话作为主区域，并在右侧提供客户、交易和任务业务视图。默认对话页本身不被插件修改。
 
 ## 快速开始
 
@@ -71,20 +72,15 @@ dsh plugin --profile web add dealpilot-dsh
 "dsh": { "profile": { "bundles": [..., "dealpilot-dsh"] } }
 ```
 
-### 3. 准备 Workspace
-
-```powershell
-Copy-Item -Recurse workspace-template D:\Ai Native\dealpilot-workspace
-```
-
-### 4. 启动
+### 3. 启动
 
 ```powershell
 dsh web
 ```
 
 - 对话：直接在标准 Agent 中用 `dealpilot_*` 工具
-- 看板：打开 `http://127.0.0.1:3080/dealpilot`
+- 默认对话：`http://127.0.0.1:3080/`（不注入 DealPilot UI）
+- DealPilot 对话工作台：`http://127.0.0.1:3080/dealpilot`
 
 ## 六个核心工具
 
@@ -108,4 +104,12 @@ dsh web
 - [x] S7: whatsapp-tool.ts
 - [x] S8: Dashboard 独立页面
 - [ ] S9: Chrome 扩展
-- [ ] S10: 端到端测试
+- [x] S10: A2A 与真实 Web 端到端测试
+- [x] S11: workspace 自动初始化与 bootstrap API
+- [x] S12: Harness slot 原生工具结果视图
+
+## 产品化方案
+
+DealPilot 的产品化路线、workspace 自动初始化、Harness 对话复用和非侵入性约束见：
+
+[产品化方案 V0.1](docs/DealPilot_Productization_Plan_V0.1.md)

@@ -7,47 +7,110 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildSnapshot } from './snapshot.js';
 import { resolveWorkspace } from './okf-utils.js';
+import { ensureWorkspace, listWorkspaces, inspectWorkspace, workspacePathFromId } from './workspace-manager.js';
 import { registerSnapshotTool } from './snapshot.js';
 import { registerWriteTool } from './write-tool.js';
 import { registerActionTool } from './action-tool.js';
 import { registerImportTool } from './import-tool.js';
 import { registerSearchTool } from './search-tool.js';
 import { registerWhatsappTool } from './whatsapp-tool.js';
+import { createToolHarness } from './tool-compat.js';
+
+export const inject = ['tools'];
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+async function readDshFrontendIndex(req?: any): Promise<string> {
+  if (req?.headers?.host) {
+    try {
+      const response = await fetch(`http://${req.headers.host}/`);
+      if (response.ok) return await response.text();
+    } catch {}
+  }
+  const candidates = [
+    path.resolve(path.dirname(process.argv[1] || ''), '..', 'node_modules', '@deepseek-ai', 'dsh-web-frontend', 'dist', 'index.html'),
+    path.resolve(path.dirname(process.argv[1] || ''), '..', 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai', 'dsh-web-frontend', 'dist', 'index.html'),
+  ];
+  for (const candidate of candidates) { try { return await fs.readFile(candidate, 'utf-8'); } catch {} }
+  throw new Error('DSH web frontend index.html was not found');
+}
+
 export function apply(ctx: Record<string, any>) {
   // ── Register 6 business tools ────────────────────────────────────────────
-  const harness = ctx.get?.('harness');
-  if (harness) {
-    registerSnapshotTool(ctx, harness);
-    registerWriteTool(ctx, harness);
-    registerActionTool(ctx, harness);
-    registerImportTool(ctx, harness);
-    registerSearchTool(ctx, harness);
-    registerWhatsappTool(ctx, harness);
+  // DSH's guarded Cordis context does not expose a generic `config` service.
+  // The business tools resolve their workspace from process.cwd() by default.
+  const toolCtx = { config: {} };
+  const harness = createToolHarness(ctx, toolCtx);
+  if (ctx.tools?.register) {
+    registerSnapshotTool(toolCtx, harness);
+    registerWriteTool(toolCtx, harness);
+    registerActionTool(toolCtx, harness);
+    registerImportTool(toolCtx, harness);
+    registerSearchTool(toolCtx, harness);
+    registerWhatsappTool(toolCtx, harness);
     console.log('[dealpilot] registered 6 business tools');
   } else {
-    console.warn('[dealpilot] harness not available — tools not registered');
+    console.warn('[dealpilot] tools service not available — tools not registered');
   }
 
   // ── Register Dashboard HTTP routes ───────────────────────────────────────
   ctx.inject?.(['webServer'], (hostCtx: any) => {
     const { webServer } = hostCtx;
 
-    // API: snapshot data for Dashboard
+    const json = (res: any, status: number, value: any) => {
+      res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(value));
+    };
+    const body = async (req: any): Promise<any> => {
+      if (req.method !== 'POST') return {};
+      let raw = ''; for await (const chunk of req) raw += chunk;
+      try { return raw ? JSON.parse(raw) : {}; } catch { throw new Error('Invalid JSON request body'); }
+    };
+
+    webServer.register({
+      kind: 'exact', path: '/api/dealpilot/workspaces',
+      handler: async (_req: any, res: any) => { try { json(res, 200, { workspaces: await listWorkspaces() }); } catch (err: any) { json(res, 500, { error: err.message }); } },
+    });
+    webServer.register({
+      kind: 'exact', path: '/api/dealpilot/workspaces/inspect',
+      handler: async (req: any, res: any) => { try { const input = await body(req); const result = await inspectWorkspace(String(input.workspaceId || '')); json(res, result.status === 'invalid' ? 400 : 200, result); } catch (err: any) { json(res, 400, { error: err.message }); } },
+    });
+    webServer.register({
+      kind: 'exact', path: '/api/dealpilot/workspaces/initialize',
+      handler: async (req: any, res: any) => { try { const input = await body(req); const workspace = workspacePathFromId(String(input.workspaceId || '')); if (!workspace) return json(res, 400, { error: 'Invalid workspaceId' }); const state = await ensureWorkspace(workspace); json(res, 200, { ...state, path: undefined }); } catch (err: any) { json(res, 400, { error: err.message }); } },
+    });
+
+    // API: snapshot data for the DealPilot shell.
     webServer.register({
       kind: 'exact',
       path: '/api/dealpilot/snapshot',
-      handler: async (_req: any, res: any) => {
+      handler: async (req: any, res: any) => {
         try {
-          const ws = resolveWorkspace(ctx.config);
+          const url = new URL(req.url || '/', 'http://dealpilot.local');
+          const selected = workspacePathFromId(url.searchParams.get('workspaceId') || '');
+          const ws = selected || resolveWorkspace(toolCtx.config);
+          await ensureWorkspace(ws);
           const snapshot = await buildSnapshot(ws);
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify(snapshot));
+          json(res, 200, snapshot);
         } catch (err: any) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: err.message }));
+          json(res, 500, { error: err.message });
+        }
+      },
+    });
+
+    // API: idempotently create/load the DealPilot workspace and first snapshot.
+    webServer.register({
+      kind: 'exact',
+      path: '/api/dealpilot/bootstrap',
+      handler: async (req: any, res: any) => {
+        try {
+          const url = new URL(req.url || '/', 'http://dealpilot.local');
+          const selected = workspacePathFromId(url.searchParams.get('workspaceId') || '');
+          const state = await ensureWorkspace(selected || resolveWorkspace(toolCtx.config));
+          const snapshot = await buildSnapshot(state.path);
+          json(res, 200, { workspace: state.metadata, created: state.created, snapshot });
+        } catch (err: any) {
+          json(res, 500, { error: err.message });
         }
       },
     });
@@ -56,20 +119,18 @@ export function apply(ctx: Record<string, any>) {
     webServer.register({
       kind: 'exact',
       path: '/dealpilot',
-      handler: async (_req: any, res: any) => {
+      handler: async (req: any, res: any) => {
         try {
-          const htmlPath = path.join(__dirname, '..', 'client', 'dashboard.html');
-          const html = await fs.readFile(htmlPath, 'utf-8');
+          const html = await readDshFrontendIndex(req);
           res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
           res.end(html);
         } catch {
           res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-          res.end(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>DealPilot</title></head>
-<body><h1>DealPilot Dashboard</h1><p>Dashboard HTML not found. Run <code>pnpm exec tsc</code> and ensure <code>client/dashboard.html</code> exists.</p></body></html>`);
+          res.end('<!doctype html><title>DealPilot</title><p>DealPilot shell is unavailable.</p>');
         }
       },
     });
 
-    console.log('[dealpilot] Dashboard routes registered: /dealpilot, /api/dealpilot/snapshot');
+    console.log('[dealpilot] Product routes registered: /dealpilot and workspace/snapshot APIs');
   });
 }

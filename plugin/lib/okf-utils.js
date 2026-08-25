@@ -3,6 +3,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as yaml from 'js-yaml';
+import { resolveWorkspacePath } from './workspace-manager.js';
 // ── YAML Frontmatter ────────────────────────────────────────────────────────
 export async function readYamlFrontmatter(filePath) {
     const raw = await fs.readFile(filePath, 'utf-8');
@@ -117,11 +118,7 @@ export function normalizeRef(workspace, basePath, value) {
  * Priority: ctx.config.defaultWorkspace → DSH cwd → process.cwd()
  */
 export function resolveWorkspace(config) {
-    const fromConfig = config?.defaultWorkspace;
-    if (fromConfig && typeof fromConfig === 'string')
-        return fromConfig;
-    // Fall back to current working directory (DSH sets this to the session workspace)
-    return process.cwd();
+    return resolveWorkspacePath(config);
 }
 export async function validateWorkspace(workspace) {
     try {

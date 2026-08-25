@@ -5,6 +5,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as yaml from 'js-yaml';
 import { resolveWorkspacePath } from './workspace-manager.js';
+import { currentWorkspacePath } from './workspace-context.js';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -177,10 +178,16 @@ export function normalizeRef(workspace: string, basePath: string, value: string)
 // ── Workspace Detection & Validation ────────────────────────────────────────
 
 /**
- * Resolve the workspace path from config or auto-detect.
- * Priority: ctx.config.defaultWorkspace → DSH cwd → process.cwd()
+ * Resolve the workspace path from the DealPilot session context first. The
+ * strict mode is used by registered tools so they never write to an implicit
+ * process working directory when a user has not selected a workspace.
  */
 export function resolveWorkspace(config?: Record<string, any>): string {
+  const bound = currentWorkspacePath();
+  if (bound) return bound;
+  if (config?.requireDealPilotSession) {
+    throw new Error('请先选择 DealPilot Workspace');
+  }
   return resolveWorkspacePath(config);
 }
 

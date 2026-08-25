@@ -23,6 +23,18 @@ export type WorkspaceInspection = {
   hasDealPilotFiles: boolean;
 };
 
+const registeredWorkspacePaths = new Map<string, string>();
+
+export function registerWorkspacePath(id: string, workspacePath: string): void {
+  if (typeof id === 'string' && id.trim() && typeof workspacePath === 'string' && path.isAbsolute(workspacePath)) {
+    registeredWorkspacePaths.set(id, path.resolve(workspacePath));
+  }
+}
+
+export function clearRegisteredWorkspacePaths(): void {
+  registeredWorkspacePaths.clear();
+}
+
 function dshHome(): string {
   return process.env.DSH_HOME || path.join(process.env.HOME || process.env.USERPROFILE || '.', '.dsh');
 }
@@ -84,10 +96,14 @@ export async function inspectWorkspace(id: string, explicitPath?: string): Promi
   let markerCount = 0;
   for (const marker of markers) { try { await fs.access(path.join(fullPath, marker)); markerCount++; } catch {} }
   const exists = markerCount > 0 || Boolean(metadata.setup_status);
-  return { id, name: metadata.name || path.basename(fullPath), status: exists ? 'reusable' : 'new', hasDealPilotFiles: exists };
+  const rawName = metadata.name || path.basename(fullPath);
+  const name = rawName === 'DealPilot Workspace' ? path.basename(fullPath) : rawName;
+  return { id, name, status: exists ? 'reusable' : 'new', hasDealPilotFiles: exists };
 }
 
 export function workspacePathFromId(id: string): string | undefined {
+  const registered = registeredWorkspacePaths.get(id);
+  if (registered) return registered;
   if (!/^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+){1,2}$/.test(id)) return undefined;
   if (id.split('/').some(part => part === '.' || part === '..')) return undefined;
   return path.resolve(workspaceRoot(), id);
@@ -111,7 +127,7 @@ export async function ensureWorkspace(workspace = defaultWorkspacePath()): Promi
     if (err.code !== 'ENOENT') throw err;
     metadata = {
       id: path.basename(resolved) || 'default',
-      name: 'DealPilot Workspace',
+      name: path.basename(resolved) || 'Sales workspace',
       created_at: new Date().toISOString(),
       setup_status: 'ready',
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
@@ -121,7 +137,7 @@ export async function ensureWorkspace(workspace = defaultWorkspacePath()): Promi
     created = true;
   }
   for (const file of [
-    ['knowledge/index.md', '# DealPilot Workspace\n\nThis workspace is managed by DealPilot.\n'],
+    ['knowledge/index.md', '# Sales workspace\n\nThis workspace is managed by DealPilot.\n'],
     ['knowledge/log.md', '# Activity Log\n\n'],
   ] as const) {
     try { await fs.access(path.join(resolved, file[0])); }

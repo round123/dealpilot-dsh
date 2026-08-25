@@ -130,15 +130,10 @@ export function registerSnapshotTool(ctx: Record<string, any>, harness: any) {
 Deals（交易列表+详情）、Funnel（各阶段数量分布）、Activity（最近30条业务事件）。
 
 快照是纯读取操作，不调用 LLM，不修改任何文件。
-Workspace 默认为当前 DSH 工作目录。`,
+Workspace 由当前 DealPilot 会话绑定，不接受客户端路径参数。`,
     parameters: {
       type: 'object',
-      properties: {
-        workspacePath: {
-          type: 'string',
-          description: 'OKF Workspace 的绝对路径（可选，默认当前工作目录）',
-        },
-      },
+      properties: {},
       required: [],
     },
     output: {
@@ -148,8 +143,8 @@ Workspace 默认为当前 DSH 工作目录。`,
         return [{ type: 'text', text: formatSnapshotSummary(s) }];
       },
     },
-    async execute(args: { workspacePath?: string }) {
-      const workspace = args.workspacePath || resolveWorkspace(ctx.config);
+    async execute(_args: Record<string, never>) {
+      const workspace = resolveWorkspace(ctx.config);
       return JSON.stringify(await buildSnapshot(workspace));
     },
   }));

@@ -1,4 +1,6 @@
 import { defineTool } from '@deepseek-ai/dsh-tools';
+import { getDealPilotSession } from './dealpilot-session.js';
+import { runWithWorkspace } from './workspace-context.js';
 
 type LegacyTool = {
   name: string;
@@ -58,8 +60,11 @@ export function createToolHarness(ctx: Record<string, any>, _toolCtx?: Record<st
             return [{ type: 'text', text: JSON.stringify(value) }];
           },
         },
-        async execute(args: any, _exec: any) {
-          const result = await tool.execute(args);
+        async execute(args: any, exec: any) {
+          const sessionId = exec?.agent?.id;
+          const context = getDealPilotSession(sessionId);
+          if (!context) throw new Error('请先选择 DealPilot Workspace');
+          const result = await runWithWorkspace(context.sessionId, context.workspacePath, () => tool.execute(args));
           if (typeof result !== 'string') return result;
           try {
             return JSON.parse(result);

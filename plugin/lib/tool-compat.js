@@ -1,4 +1,6 @@
 import { defineTool } from '@deepseek-ai/dsh-tools';
+import { getDealPilotSession } from './dealpilot-session.js';
+import { runWithWorkspace } from './workspace-context.js';
 function normalizeSchema(schema) {
     const normalized = { ...schema };
     if (normalized.type === 'object') {
@@ -39,8 +41,12 @@ export function createToolHarness(ctx, _toolCtx) {
                         return [{ type: 'text', text: JSON.stringify(value) }];
                     },
                 },
-                async execute(args, _exec) {
-                    const result = await tool.execute(args);
+                async execute(args, exec) {
+                    const sessionId = exec?.agent?.id;
+                    const context = getDealPilotSession(sessionId);
+                    if (!context)
+                        throw new Error('请先选择 DealPilot Workspace');
+                    const result = await runWithWorkspace(context.sessionId, context.workspacePath, () => tool.execute(args));
                     if (typeof result !== 'string')
                         return result;
                     try {

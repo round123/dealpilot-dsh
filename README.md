@@ -1,11 +1,11 @@
 # DealPilot DSH
 
 > AI 原生销售工作台 — 纯 DSH Cordis 插件。
-> `/` 保持原始 DeepSeek Harness 对话体验；`/dealpilot` 提供带 Workspace 和业务视图的 DealPilot 对话工作台。
+> `/` 保持原始 DeepSeek Harness 对话体验；`/dealpilot` 提供固定销售 Agent、单 Workspace 和业务看板的原生 DSH 对话工作台。
 
 ## 架构
 
-**纯插件，零侵入。** 不需要独立 Agent Preset，安装后标准 Agent 自动获得 6 个业务工具。
+**纯插件，零侵入。** DealPilot 使用独立的 `dealpilot-sales` Agent preset；默认 DSH 会话和页面不被修改。
 
 ```
 dealpilot-dsh/
@@ -22,8 +22,9 @@ dealpilot-dsh/
 │   │   ├── import-tool.ts
 │   │   ├── search-tool.ts
 │   │   └── whatsapp-tool.ts
-│   └── client/                 ← DealPilot 工作台 UI
-│       ├── client.ts           ← 默认 DSH 无注入客户端入口
+│   ├── agent-preset/           ← dealpilot-sales Agent preset
+│   └── client/                 ← /dealpilot 路由级 UI
+│       ├── client.ts           ← 仅在 /dealpilot 增强原生 DSH 页面
 │       ├── dealpilot-shell.html ← /dealpilot 页面 Shell
 │       └── dashboard.html      ← 旧版兼容页面
 ├── docs/                       ← 设计文档
@@ -45,7 +46,7 @@ Agent 调用 `dealpilot_*` 工具，返回格式化结果。
 
 ### 方式 2：DealPilot 工作台
 
-安装后访问 **`http://127.0.0.1:3080/dealpilot`**。从左侧选择 DSH Workspace；已有 DealPilot 文件会自动复用，空 Workspace 可在页面中显式初始化。
+安装后访问 **`http://127.0.0.1:3080/dealpilot`**。首次进入必须选择一个 DSH Workspace；已有 DealPilot 文件会自动复用，空 Workspace 可在页面中显式初始化。进入后新建对话自动绑定 `dealpilot-sales`，默认 `/` 不受影响。
 
 DealPilot 页面复用原生 DSH 对话作为主区域，并在右侧提供客户、交易和任务业务视图。默认对话页本身不被插件修改。
 
@@ -102,11 +103,11 @@ dsh web
 - [x] S5: import-tool.ts
 - [x] S6: search-tool.ts
 - [x] S7: whatsapp-tool.ts
-- [x] S8: Dashboard 独立页面
+- [x] S8: `/dealpilot` 原生 DSH 对话工作台
 - [ ] S9: Chrome 扩展
 - [x] S10: A2A 与真实 Web 端到端测试
 - [x] S11: workspace 自动初始化与 bootstrap API
-- [x] S12: Harness slot 原生工具结果视图
+- [x] S12: 路由级业务导航和工具结果视图
 
 ## 产品化方案
 

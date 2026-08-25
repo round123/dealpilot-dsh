@@ -55,6 +55,27 @@ test('Harness client leaves the native DSH surface clean', async () => {
   assert.doesNotMatch(clientBundle, /DealPilot Workspace/);
 });
 
+test('DealPilot client exposes the business workbench interaction contract', async () => {
+  const clientBundle = await readFile(path.join(root, 'plugin', 'client', 'client.js'), 'utf8');
+  for (const marker of [
+    'data-board-search',
+    'data-board-filter',
+    'data-board-detail',
+    'data-ask-agent',
+    'data-action-update',
+    'restoreSession',
+    'MutationObserver',
+    'body:not(.dealpilot-ready)',
+    'attachDealPilotSidebar',
+    'sidebar.workspaces',
+    'dealpilot-native-workspaces-hidden',
+    'data-cancel-workspace',
+    'inspectVersion',
+  ]) {
+    assert.ok(clientBundle.includes(marker), `${marker} must remain in the DealPilot workbench`);
+  }
+});
+
 test('A2A DealPilot shell reuses DSH conversation and renders business views', async () => {
   const { chromium } = await import(pathToFileURL(path.join(root, 'plugin', 'node_modules', 'playwright', 'index.mjs')).href);
   const html = await readFile(shellPath, 'utf8');

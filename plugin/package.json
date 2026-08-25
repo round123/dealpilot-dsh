@@ -1,7 +1,7 @@
 {
   "name": "dealpilot-dsh",
   "version": "0.1.0",
-  "description": "DealPilot — AI-native sales workspace on DeepSeek Harness. Pure cordis plugin, no separate agent preset.",
+  "description": "DealPilot — AI-native sales workspace on DeepSeek Harness with a dedicated sales assistant preset.",
   "type": "module",
   "main": "lib/index.js",
   "scripts": {
@@ -24,6 +24,9 @@
         "@deepseek-ai/dsh-client-runtime"
       ],
       "platform": "web"
+    },
+    "agentPresets": {
+      "dealpilot-sales": "./agent-preset/dealpilot-sales"
     }
   },
   "dependencies": {

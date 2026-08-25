@@ -31,23 +31,49 @@ jobs:
         run: pnpm exec tsc
         working-directory: plugin
 
+      - name: Run tests
+        run: node --test tests/*.test.mjs
+
+      - name: Assemble distributable
+        shell: bash
+        run: |
+          dist_dir="$RUNNER_TEMP/dealpilot-dsh"
+          mkdir -p "$dist_dir/lib" "$dist_dir/client"
+
+          cp plugin/package.json "$dist_dir/"
+          cp plugin/cordis.patch.yml "$dist_dir/"
+          cp plugin/pnpm-lock.yaml "$dist_dir/"
+          cp README.md "$dist_dir/"
+          cp plugin/lib/*.js "$dist_dir/lib/"
+          cp plugin/client/client.js "$dist_dir/client/"
+          cp plugin/client/dashboard.html "$dist_dir/client/"
+          cp plugin/client/dealpilot-shell.html "$dist_dir/client/"
+          cp -R plugin/agent-preset "$dist_dir/agent-preset"
+
+          short_sha="${GITHUB_SHA:0:7}"
+          tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/dealpilot-dsh-$short_sha.tar.gz" dealpilot-dsh
+          cd "$RUNNER_TEMP"
+          zip -qr "dealpilot-dsh-$short_sha.zip" dealpilot-dsh
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dealpilot-dsh-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/dealpilot-dsh-*.tar.gz
+            ${{ runner.temp }}/dealpilot-dsh-*.zip
+          if-no-files-found: error
+
       - name: Publish to dist branch
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
 
-          # Create dist branch from plugin build output
+          # Rebuild dist as a clean, directly installable plugin branch.
           git checkout --orphan dist
-          git rm -rf --cached .
-          
-          cp plugin/package.json .
-          cp plugin/cordis.patch.yml .
-          mkdir -p lib client
-          cp plugin/lib/*.js lib/
-          cp plugin/client/dashboard.html client/
-          cp plugin/client/client.js client/ 2>/dev/null || true
-          cp plugin/pnpm-lock.yaml . 2>/dev/null || true
-          
-          git add -A
-          git commit -m "build: $(date -u +%Y-%m-%d-%H%M)"
-          git push -f origin dist
+          git rm -rf .
+          cp -R "$RUNNER_TEMP/dealpilot-dsh/." .
+
+          git add README.md package.json pnpm-lock.yaml cordis.patch.yml lib client agent-preset
+          git commit -m "build: ${GITHUB_SHA}"
+          git push -f origin HEAD:dist

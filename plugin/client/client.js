@@ -499,9 +499,20 @@ function mountDealPilot(runtime) {
         renderBoard(view);
     };
     const importExtensions = /\.(xlsx|xlsm|csv|md|markdown|txt)$/i;
-    const droppedImportFile = (event) => Array.from(event.dataTransfer?.files || []).find(file => importExtensions.test(file.name));
+    const droppedImportFile = (event) => {
+        const files = Array.from(event.dataTransfer?.files || []);
+        const match = files.find(file => importExtensions.test(file.name));
+        if (match)
+            return match;
+        // During dragover Chromium may expose only DataTransferItem metadata;
+        // treat file items as candidates and inspect their names on drop.
+        const item = Array.from(event.dataTransfer?.items || []).find(item => item.kind === 'file');
+        const file = item?.getAsFile?.();
+        return file && importExtensions.test(file.name) ? file : undefined;
+    };
+    const isImportDrag = (event) => Boolean(droppedImportFile(event) || Array.from(event.dataTransfer?.items || []).some(item => item.kind === 'file'));
     document.addEventListener('dragover', event => {
-        if (!droppedImportFile(event))
+        if (!isImportDrag(event))
             return;
         event.preventDefault();
         event.stopImmediatePropagation();

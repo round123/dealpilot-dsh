@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { readFile, mkdir } from 'node:fs/promises';
+import { readFile, mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
+import os from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 
@@ -126,7 +127,7 @@ test('route client mounts the persistent business context and full workbench in 
     window.__ModuleLoader__={load(value){const plugin=value.factory(()=>{});window.__clientApply=plugin.apply;window.__clientInject=plugin.inject}};
   </script>
   <script>${clientBundle.replaceAll('</script>', '<\\/script>')}</script><script>window.__clientApply({sessions:nativeSessions,connection,get(name){return name==='sessions'?nativeSessions:name==='connection'?connection:undefined}})</script></body></html>`;
-  const server = createServer((req, res) => {
+  const server = createServer(async (req, res) => {
     if (req.url === '/dealpilot') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(pageHtml); return;
     }
@@ -142,11 +143,18 @@ test('route client mounts the persistent business context and full workbench in 
     if (req.url?.startsWith('/api/dealpilot/snapshot')) {
       res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(snapshot)); return;
     }
+    if (req.url?.startsWith('/api/dealpilot/artifacts') && req.method === 'POST') {
+      const chunks = []; for await (const chunk of req) chunks.push(chunk);
+      const name = req.headers['x-file-name'] || 'upload.csv';
+      res.writeHead(201, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ id: `art_fixture_${String(name).replace(/\W/g, '_')}`, originalName: name, status: 'staged' })); return;
+    }
     res.writeHead(404); res.end();
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address();
   const browser = await chromium.launch({ headless: true });
+  const fixtureDir = await mkdtemp(path.join(os.tmpdir(), 'dealpilot-browser-import-'));
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     await page.goto(`http://127.0.0.1:${port}/dealpilot`);
@@ -160,6 +168,20 @@ test('route client mounts the persistent business context and full workbench in 
     assert.match(await page.locator('.dealpilot-context').textContent(), /Send revised proposal/);
 
     await page.getByRole('button', { name: /打开完整工作台/ }).click();
+    await page.getByLabel('销售工作台导航').getByRole('button', { name: '导入中心', exact: true }).click();
+    const csvPath = path.join(fixtureDir, 'simulated-customers.csv');
+    await writeFile(csvPath, 'title,market\nAcme GmbH,DE\nAcme Corp,US\n', 'utf8');
+    await page.locator('[data-import-file]').setInputFiles(csvPath);
+    await page.getByText(/已上传 simulated-customers.csv/).waitFor({ state: 'visible' });
+    assert.match(await page.locator('[data-import-result]').textContent(), /Artifact ID: art_fixture/);
+    await page.evaluate(() => {
+      const file = new File(['title,market\nNordlicht Energy,DE\n'], 'simulated-drop.csv', { type: 'text/csv' });
+      const transfer = new DataTransfer(); transfer.items.add(file);
+      document.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+    });
+    await page.getByText(/已上传 simulated-drop.csv/).waitFor({ state: 'visible' });
+    assert.match(await page.locator('[data-import-result]').textContent(), /simulated-drop.csv/);
+
     await page.getByLabel('销售工作台导航').getByRole('button', { name: '客户', exact: true }).click();
     await page.getByRole('button', { name: /Acme Corp/ }).click();
     assert.match(await page.locator('.dealpilot-board-detail').textContent(), /关系阶段/);
@@ -169,6 +191,7 @@ test('route client mounts the persistent business context and full workbench in 
     assert.equal(await page.getByRole('button', { name: '打开业务上下文' }).isVisible(), true);
   } finally {
     await browser.close();
+    await rm(fixtureDir, { recursive: true, force: true });
     await new Promise((resolve) => server.close(resolve));
   }
 });

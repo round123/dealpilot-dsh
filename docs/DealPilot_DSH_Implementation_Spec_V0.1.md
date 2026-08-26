@@ -2,6 +2,8 @@
 
 > 本文档是开发手册，面向实现者。每个阶段包含具体任务、输入输出、验收条件和关键代码片段。
 
+> **验收状态（2026-08-26）**：S0-S6、S8-S9 及 Workspace/session、业务视图、导入、确认、Goal/Workflow、性能和安全增强均已落地；TypeScript 编译和 `node --test tests/*.test.mjs`（26/26）通过，A2A/浏览器契约和真实 `/dealpilot` 交互已验证。S7 的 WhatsApp Chrome 扩展闭环是本轮唯一未交付项。文中旧的 `[ ]` 复选框是阶段设计时的执行清单，不代表当前实现状态。
+
 ---
 
 ## S0：环境准备与项目初始化
@@ -662,12 +664,12 @@ export function apply(ctx: any) {
     parameters: {
       type: 'object',
       properties: {
-        operation: { type: 'string', enum: ['create', 'update', 'archive'] },
+        operation: { type: 'string', enum: ['create', 'update', 'archive', 'merge'] },
         entity: { type: 'string', enum: ['customer', 'deal', 'action'] },
         ref: { type: 'string', description: '目标对象引用路径（update/archive 时必需）' },
         fields: {
           type: 'object',
-          description: '要写入的字段。create 时必需 title；update 时只写提供的字段'
+          description: '要写入的字段。create 时必需 title；update 时只写提供的字段；merge 使用 ref/source_ref'
         }
       },
       required: ['operation', 'entity', 'fields']
@@ -1139,7 +1141,9 @@ function Sidebar(props: any) {
         )
       )
     ),
-    React.createElement('button', { onClick: () => props.navigate('/dealpilot/dashboard') }, '📋 完整工作台'),
+    // The full workbench is an in-page view on /dealpilot; it does not create a
+    // separate dashboard route or replace the default DSH conversation at /.
+    React.createElement('button', { onClick: () => window.dispatchEvent(new CustomEvent('dealpilot:open-view', { detail: { view: 'deals' } })) }, '📋 完整工作台'),
     React.createElement('button', { onClick: refresh }, '🔄 刷新')
   );
 }

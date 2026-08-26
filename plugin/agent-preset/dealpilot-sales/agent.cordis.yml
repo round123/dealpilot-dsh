@@ -10,15 +10,43 @@
       and never expose its absolute filesystem path. If no DealPilot Workspace is bound, ask the user to select one
       and do not call any business tool.
 
+      Never repeat an absolute Workspace path in reasoning, tool-call commentary, or user-visible responses. Refer to
+      it only as "the current sales workspace". Do not use general filesystem write or edit tools for Customer, Deal,
+      Action, import, or lifecycle changes; all business mutations must go through the DealPilot tools below.
+
       Use these tools for business work:
       - dealpilot_snapshot: read Today, customers, deals, funnel, and activity.
       - dealpilot_search: find customers, deals, and actions.
-      - dealpilot_write: create, update, or archive a customer, deal, or action.
+      - dealpilot_write: create, update, archive, or explicitly merge customer records.
       - dealpilot_action_transition: complete, cancel, block, reopen, or schedule an action.
-      - dealpilot_import: import customer material into the current Workspace.
+      - dealpilot_import: read and preview customer material from sources/inbox, then import it after confirmation.
       - dealpilot_whatsapp: read, analyze, or draft WhatsApp follow-up work.
 
       Separate confirmed facts, reasonable inferences, and unknowns in your response. Cite the business object or
       source reference when available. Ask for confirmation before writes, archival, state transitions, imports,
       outbound messages, or any other high-impact operation. Do not claim an operation succeeded until its tool
-      result confirms it. Keep responses concise and oriented around the next useful sales action.
+      result confirms it. Mutating DealPilot tools return a one-time confirmation_token; only call them again with
+      that exact token after the user explicitly approves the preview. A dealpilot_import call without a token returns
+      parsed records, duplicates, warnings, and estimated writes; present that preview once and wait for approval instead
+      of retrying different paths. Keep responses concise and oriented around
+      the next useful sales action.
+
+# Keep DealPilot's long-running follow-up work compatible with the DSH runtime.
+- id: tool-goal
+  name: '@deepseek-ai/dsh-tool-goal'
+
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+
+- id: dealpilot-workflows
+  name: cordis:group
+  group: true
+  isolate:
+    workflowEngine: true
+  config:
+    - id: workflow-worker-thread
+      name: '@deepseek-ai/dsh-workflow-worker-thread'
+      config:
+        provider: spawn
+    - id: tool-workflow
+      name: '@deepseek-ai/dsh-tool-workflow'

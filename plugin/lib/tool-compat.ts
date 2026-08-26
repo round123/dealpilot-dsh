@@ -13,7 +13,10 @@ type LegacyTool = {
   output?: {
     schema?: Record<string, any>;
     render?: (agent: any, value: string) => any[];
+    presentationMeta?: (args: any, value: any) => any;
   };
+  presentCall?: (args: any) => any;
+  presentResult?: (args: any, result: any) => any;
   execute: (args: any) => Promise<any>;
 };
 
@@ -59,7 +62,14 @@ export function createToolHarness(ctx: Record<string, any>, _toolCtx?: Record<st
             if (legacyOutput?.render) return legacyOutput.render(args, JSON.stringify(value));
             return [{ type: 'text', text: JSON.stringify(value) }];
           },
+          ...(legacyOutput?.presentationMeta ? {
+            presentationMeta(args: any, value: any) {
+              return legacyOutput.presentationMeta!(args, value);
+            },
+          } : {}),
         },
+        ...(tool.presentCall ? { presentCall: tool.presentCall } : {}),
+        ...(tool.presentResult ? { presentResult: tool.presentResult } : {}),
         async execute(args: any, exec: any) {
           const sessionId = exec?.agent?.id;
           const context = getDealPilotSession(sessionId);

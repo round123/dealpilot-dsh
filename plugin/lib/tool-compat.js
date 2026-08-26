@@ -40,7 +40,14 @@ export function createToolHarness(ctx, _toolCtx) {
                             return legacyOutput.render(args, JSON.stringify(value));
                         return [{ type: 'text', text: JSON.stringify(value) }];
                     },
+                    ...(legacyOutput?.presentationMeta ? {
+                        presentationMeta(args, value) {
+                            return legacyOutput.presentationMeta(args, value);
+                        },
+                    } : {}),
                 },
+                ...(tool.presentCall ? { presentCall: tool.presentCall } : {}),
+                ...(tool.presentResult ? { presentResult: tool.presentResult } : {}),
                 async execute(args, exec) {
                     const sessionId = exec?.agent?.id;
                     const context = getDealPilotSession(sessionId);

@@ -6,16 +6,17 @@ import { copyFileSync, mkdirSync } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildSnapshot } from './snapshot.js';
-import { resolveWorkspace } from './okf-utils.js';
-import { ensureWorkspace, listWorkspaces, inspectWorkspace, workspacePathFromId, registerWorkspacePath } from './workspace-manager.js';
+import { ensureWorkspace, listWorkspaces, inspectWorkspace, workspacePathFromId, registerWorkspacePath, defaultWorkspacePath } from './workspace-manager.js';
 import { registerSnapshotTool } from './snapshot.js';
 import { registerWriteTool } from './write-tool.js';
 import { registerActionTool } from './action-tool.js';
 import { registerImportTool } from './import-tool.js';
+import { previewImport } from './import-tool.js';
 import { registerSearchTool } from './search-tool.js';
 import { registerWhatsappTool } from './whatsapp-tool.js';
 import { createToolHarness } from './tool-compat.js';
-import { createDealPilotSession, getDealPilotSession, publicDealPilotSession, switchDealPilotWorkspace, } from './dealpilot-session.js';
+import { readGoalRuntime } from './goal-runtime.js';
+import { createDealPilotSession, getDealPilotSession, listDealPilotSessions, publicDealPilotSession, switchDealPilotWorkspace, } from './dealpilot-session.js';
 export const inject = ['tools'];
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 async function readDshFrontendIndex(req) {
@@ -79,6 +80,31 @@ async function syncDshWorkspaceRegistry(req) {
     catch {
         return [];
     }
+}
+/** Create a native DSH session without registering a new global Workspace. */
+async function createDshSession(req, workspacePath) {
+    const host = req?.headers?.host;
+    if (!host)
+        throw new Error('DSH session service is unavailable');
+    const response = await fetch(`http://${host}/api/session.create`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+            type: 'client-request',
+            rpcId: `dealpilot-session-create-${Date.now()}`,
+            method: 'session.create',
+            payload: { cwd: workspacePath, agentPreset: 'dealpilot-sales' },
+        }),
+    });
+    if (!response.ok)
+        throw new Error(`DSH session create failed (HTTP ${response.status})`);
+    const envelope = await response.json();
+    if (!envelope?.result?.ok)
+        throw new Error(envelope?.result?.error?.message || 'DSH session create failed');
+    const value = envelope.result.value;
+    if (!value?.sessionId)
+        throw new Error('DSH did not return a session id');
+    return { sessionId: String(value.sessionId), agentPreset: value.agentPreset };
 }
 export function apply(ctx) {
     installDealPilotPreset();
@@ -152,18 +178,46 @@ export function apply(ctx) {
         });
         webServer.register({
             kind: 'exact', path: '/api/dealpilot/workspaces/initialize',
-            handler: async (req, res) => { try {
-                const input = await body(req);
-                await syncDshWorkspaceRegistry(req);
-                const workspace = workspacePathFromId(String(input.workspaceId || ''));
-                if (!workspace)
-                    return json(res, 400, { error: 'Invalid workspaceId' });
-                const state = await ensureWorkspace(workspace);
-                json(res, 200, { ...state, path: undefined });
-            }
-            catch (err) {
-                json(res, 400, { error: err.message });
-            } },
+            handler: async (req, res) => {
+                try {
+                    const input = await body(req);
+                    await syncDshWorkspaceRegistry(req);
+                    const workspace = workspacePathFromId(String(input.workspaceId || ''));
+                    if (!workspace)
+                        return json(res, 400, { error: 'Invalid workspaceId' });
+                    const state = await ensureWorkspace(workspace);
+                    json(res, 200, {
+                        ...state,
+                        path: undefined,
+                        workspaceId: input.workspaceId,
+                        workspaceName: state.metadata.name,
+                    });
+                }
+                catch (err) {
+                    json(res, 400, { error: err.message });
+                }
+            },
+        });
+        webServer.register({
+            kind: 'exact', path: '/api/dealpilot/workspaces/archive',
+            handler: async (req, res) => {
+                try {
+                    const input = await body(req);
+                    await syncDshWorkspaceRegistry(req);
+                    const workspace = workspacePathFromId(String(input.workspaceId || ''));
+                    if (!workspace)
+                        return json(res, 400, { error: 'Invalid workspaceId' });
+                    const metadataPath = path.join(workspace, '.dsh', 'workspace.json');
+                    const metadata = JSON.parse(await fs.readFile(metadataPath, 'utf8'));
+                    metadata.setup_status = 'archived';
+                    metadata.archived_at = new Date().toISOString();
+                    await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2) + '\n', 'utf8');
+                    json(res, 200, { id: input.workspaceId, status: 'archived' });
+                }
+                catch (err) {
+                    json(res, 400, { error: err.message });
+                }
+            },
         });
         webServer.register({
             kind: 'exact', path: '/api/dealpilot/session',
@@ -173,6 +227,61 @@ export function apply(ctx) {
                     await syncDshWorkspaceRegistry(req);
                     const session = await createDealPilotSession(String(input.workspaceId || ''), input.dshSessionId ? String(input.dshSessionId) : undefined);
                     json(res, 200, publicDealPilotSession(session));
+                }
+                catch (err) {
+                    json(res, 400, { error: err.message });
+                }
+            },
+        });
+        webServer.register({
+            kind: 'exact', path: '/api/dealpilot/native-session',
+            handler: async (req, res) => {
+                try {
+                    const input = await body(req);
+                    await syncDshWorkspaceRegistry(req);
+                    const workspaceId = String(input.workspaceId || '');
+                    const workspace = workspacePathFromId(workspaceId);
+                    if (!workspace)
+                        return json(res, 400, { error: 'Invalid workspaceId' });
+                    const inspection = await inspectWorkspace(workspaceId, workspace);
+                    if (inspection.status === 'new')
+                        return json(res, 409, { error: '请先初始化 DealPilot Workspace' });
+                    if (inspection.status === 'archived')
+                        return json(res, 409, { error: 'Workspace 已归档，不能创建 DealPilot 对话' });
+                    const session = await createDshSession(req, workspace);
+                    json(res, 200, { workspaceId, ...session });
+                }
+                catch (err) {
+                    json(res, 400, { error: err.message });
+                }
+            },
+        });
+        webServer.register({
+            kind: 'exact', path: '/api/dealpilot/sessions',
+            handler: async (req, res) => {
+                try {
+                    const url = new URL(req.url || '/', 'http://dealpilot.local');
+                    const workspaceId = url.searchParams.get('workspaceId') || undefined;
+                    const sessions = listDealPilotSessions(workspaceId).map(publicDealPilotSession);
+                    json(res, 200, { sessions });
+                }
+                catch (err) {
+                    json(res, 400, { error: err.message });
+                }
+            },
+        });
+        webServer.register({
+            kind: 'exact', path: '/api/dealpilot/import/preview',
+            handler: async (req, res) => {
+                try {
+                    const input = await body(req);
+                    await syncDshWorkspaceRegistry(req);
+                    const workspace = workspacePathFromId(String(input.workspaceId || ''));
+                    if (!workspace)
+                        return json(res, 400, { error: 'Invalid workspaceId' });
+                    const data = typeof input.data === 'string' ? input.data : '';
+                    const format = ['csv', 'markdown', 'text'].includes(input.format) ? input.format : 'text';
+                    json(res, 200, await previewImport(workspace, data, format, input.autoDedup !== false));
                 }
                 catch (err) {
                     json(res, 400, { error: err.message });
@@ -211,14 +320,59 @@ export function apply(ctx) {
             handler: async (req, res) => {
                 try {
                     const url = new URL(req.url || '/', 'http://dealpilot.local');
+                    await syncDshWorkspaceRegistry(req);
                     const selected = workspacePathFromId(url.searchParams.get('workspaceId') || '');
-                    const ws = selected || resolveWorkspace(toolCtx.config);
+                    const ws = selected || defaultWorkspacePath();
                     await ensureWorkspace(ws);
                     const snapshot = await buildSnapshot(ws);
                     json(res, 200, snapshot);
                 }
                 catch (err) {
                     json(res, 500, { error: err.message });
+                }
+            },
+        });
+        const readWorkspaceSnapshot = async (req) => {
+            const url = new URL(req.url || '/', 'http://dealpilot.local');
+            await syncDshWorkspaceRegistry(req);
+            const workspaceId = url.searchParams.get('workspaceId') || '';
+            const selected = workspacePathFromId(workspaceId);
+            if (!selected)
+                throw new Error('Invalid workspaceId');
+            return buildSnapshot(selected);
+        };
+        const collectionRoutes = [
+            ['/api/dealpilot/customers', (snapshot) => snapshot.customers],
+            ['/api/dealpilot/deals', (snapshot) => snapshot.deals],
+            ['/api/dealpilot/actions', (snapshot) => snapshot.deals.flatMap((deal) => (deal.actions || []).map((action) => ({ ...action, deal_title: deal.title, customer_name: deal.customer_name })))],
+            ['/api/dealpilot/events', (snapshot) => snapshot.activity],
+            ['/api/dealpilot/weekly-review', (snapshot) => snapshot.operations.weekly_review],
+            ['/api/dealpilot/risk', (snapshot) => snapshot.operations.risk_deals],
+            ['/api/dealpilot/stalled', (snapshot) => snapshot.operations.stalled_deals],
+        ];
+        for (const [route, project] of collectionRoutes) {
+            webServer.register({
+                kind: 'exact', path: route,
+                handler: async (req, res) => {
+                    try {
+                        json(res, 200, { data: project(await readWorkspaceSnapshot(req)) });
+                    }
+                    catch (err) {
+                        json(res, 400, { error: err.message });
+                    }
+                },
+            });
+        }
+        webServer.register({
+            kind: 'exact', path: '/api/dealpilot/export',
+            handler: async (req, res) => {
+                try {
+                    const snapshot = await readWorkspaceSnapshot(req);
+                    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Disposition': 'attachment; filename="dealpilot-export.json"' });
+                    res.end(JSON.stringify(snapshot, null, 2));
+                }
+                catch (err) {
+                    json(res, 400, { error: err.message });
                 }
             },
         });
@@ -230,12 +384,29 @@ export function apply(ctx) {
                 try {
                     const url = new URL(req.url || '/', 'http://dealpilot.local');
                     const selected = workspacePathFromId(url.searchParams.get('workspaceId') || '');
-                    const state = await ensureWorkspace(selected || resolveWorkspace(toolCtx.config));
+                    const state = await ensureWorkspace(selected || defaultWorkspacePath());
                     const snapshot = await buildSnapshot(state.path);
                     json(res, 200, { workspace: state.metadata, created: state.created, snapshot });
                 }
                 catch (err) {
                     json(res, 500, { error: err.message });
+                }
+            },
+        });
+        webServer.register({
+            kind: 'exact',
+            path: '/api/dealpilot/runtime',
+            handler: async (req, res) => {
+                try {
+                    const url = new URL(req.url || '/', 'http://dealpilot.local');
+                    await syncDshWorkspaceRegistry(req);
+                    const selected = workspacePathFromId(url.searchParams.get('workspaceId') || '');
+                    if (!selected)
+                        return json(res, 400, { error: 'Invalid workspaceId' });
+                    return json(res, 200, await readGoalRuntime(selected));
+                }
+                catch (err) {
+                    return json(res, 500, { error: err.message });
                 }
             },
         });

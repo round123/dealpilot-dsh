@@ -3,16 +3,21 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 test('DealPilot preset metadata and business rules are present', async () => {
-  const metadata = await readFile(path.join('plugin', 'agent-preset', 'dealpilot-sales', 'preset.yml'), 'utf8');
-  const composition = await readFile(path.join('plugin', 'agent-preset', 'dealpilot-sales', 'agent.cordis.yml'), 'utf8');
+  const metadata = await readFile(path.join(root, 'plugin', 'agent-preset', 'dealpilot-sales', 'preset.yml'), 'utf8');
+  const composition = await readFile(path.join(root, 'plugin', 'agent-preset', 'dealpilot-sales', 'agent.cordis.yml'), 'utf8');
   assert.match(metadata, /id:\s*dealpilot-sales/);
   assert.match(metadata, /DealPilot 销售助理/);
   for (const tool of ['dealpilot_snapshot', 'dealpilot_search', 'dealpilot_write', 'dealpilot_action_transition', 'dealpilot_import', 'dealpilot_whatsapp']) {
     assert.match(composition, new RegExp(tool));
   }
   assert.match(composition, /absolute filesystem path/);
+  assert.match(composition, /reasoning, tool-call commentary/);
+  assert.match(composition, /parsed records, duplicates, warnings, and estimated writes/);
   assert.match(composition, /confirmation/i);
 });
 
@@ -36,10 +41,18 @@ test('business tools require a bound DealPilot session and use its workspace', a
     await assert.rejects(() => snapshot.execute({}, { agent: { id: 'unbound-session' } }), /请先选择 DealPilot Workspace/);
     const value = await snapshot.execute({}, { agent: { id: context.sessionId } });
     assert.equal(value.workspace_name, path.basename(workspace));
+    const preview = await write.execute({
+      operation: 'create',
+      entity: 'customer',
+      fields: { title: '真实业务测试客户', market: 'DE', priority: 'high' },
+    }, { agent: { id: context.sessionId } });
+    assert.equal(preview.requires_confirmation, true);
+    assert.ok(preview.confirmation_token);
     const created = await write.execute({
       operation: 'create',
       entity: 'customer',
       fields: { title: '真实业务测试客户', market: 'DE', priority: 'high' },
+      confirmation_token: preview.confirmation_token,
     }, { agent: { id: context.sessionId } });
     assert.equal(created.ok, true);
     const afterWrite = await snapshot.execute({}, { agent: { id: context.sessionId } });

@@ -86,6 +86,9 @@ export async function inspectWorkspace(id, explicitPath) {
         metadata = JSON.parse(await fs.readFile(path.join(fullPath, '.dsh', 'workspace.json'), 'utf8'));
     }
     catch { }
+    if (metadata.setup_status === 'archived') {
+        return { id, name: metadata.name || path.basename(fullPath), status: 'archived', hasDealPilotFiles: true };
+    }
     const markers = ['knowledge/customers', 'knowledge/deals', 'knowledge/actions', 'sources/inbox'];
     let markerCount = 0;
     for (const marker of markers) {
@@ -141,6 +144,7 @@ export async function ensureWorkspace(workspace = defaultWorkspacePath()) {
     for (const file of [
         ['knowledge/index.md', '# Sales workspace\n\nThis workspace is managed by DealPilot.\n'],
         ['knowledge/log.md', '# Activity Log\n\n'],
+        ['storage/indexes/dealpilot-runtime.json', '{"goals":[],"workflows":[]}\n'],
     ]) {
         try {
             await fs.access(path.join(resolved, file[0]));

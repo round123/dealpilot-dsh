@@ -2,11 +2,14 @@
 // State machine for action lifecycle: complete, cancel, block, reopen, schedule.
 // TypeScript implementation.
 import * as path from 'node:path';
-import { readYamlFrontmatter, writeYamlFrontmatter, appendBusinessEvent, updateStorageIndex, readConceptDir, resolveWorkspace, } from './okf-utils.js';
+import { readYamlFrontmatter, writeYamlFrontmatter, appendBusinessEvent, updateStorageIndex, readConceptDir, resolveWorkspace, normalizeRef, } from './okf-utils.js';
+import { syncGoalRuntime } from './goal-runtime.js';
+import { createConfirmation, consumeConfirmation } from './confirmation.js';
+import { actionPresentation } from './business-view.js';
 // ── Valid Transitions ───────────────────────────────────────────────────────
 const VALID_TRANSITIONS = {
-    active: ['complete', 'cancel', 'block'],
-    planned: ['active', 'cancel'],
+    active: ['complete', 'cancel', 'block', 'schedule'],
+    planned: ['active', 'cancel', 'schedule'],
     blocked: ['reopen', 'cancel'],
     done: ['reopen'],
     cancelled: ['reopen'],
@@ -29,6 +32,7 @@ export function registerActionTool(ctx, harness) {
 - active → complete: 完成行动（状态变为 done）
 - active → cancel: 取消行动（状态变为 cancelled）
 - active → block: 阻塞行动（状态变为 blocked）
+- active → schedule: 安排后续跟进（状态变为 planned）
 - planned → active: 开始行动
 - planned → cancel: 取消计划
 - blocked → reopen: 重新打开（状态变为 active）
@@ -64,20 +68,46 @@ export function registerActionTool(ctx, harness) {
                     type: 'string',
                     description: '完成证据（complete 时可选）',
                 },
+                confirmation_token: {
+                    type: 'string',
+                    description: '用户确认预览后返回的一次性确认令牌',
+                },
             },
             required: ['action_ref', 'transition'],
         },
+        output: {
+            schema: { type: 'object' },
+            render(_args, value) {
+                const result = JSON.parse(value);
+                if (result.requires_confirmation) {
+                    return [{ type: 'text', text: `${result.message}\nconfirmation_token: ${result.confirmation_token}\npreview: ${JSON.stringify(result.preview || {})}` }];
+                }
+                return [{ type: 'text', text: `跟进任务状态已更新\nDATA_JSON: ${JSON.stringify(result)}` }];
+            },
+            presentationMeta(args, value) {
+                return actionPresentation(args, value);
+            },
+        },
         async execute(args) {
             const workspace = resolveWorkspace(ctx.config);
-            const { action_ref, transition, reason, due_at, evidence } = args;
+            const { action_ref, transition, reason, due_at, evidence, confirmation_token } = args;
+            const safeActionRef = normalizeRef(workspace, 'knowledge/actions/index.md', action_ref);
+            const confirmationPayload = { action_ref: safeActionRef, transition, reason: reason || null, due_at: due_at || null, evidence: evidence || null };
+            if (!confirmation_token) {
+                return JSON.stringify(createConfirmation('dealpilot_action_transition', confirmationPayload, '这是一个会改变跟进任务状态的操作。请向用户展示当前状态、目标状态和原因，获得明确确认后再重试。'));
+            }
+            consumeConfirmation(confirmation_token, 'dealpilot_action_transition', confirmationPayload);
             const now = new Date().toISOString();
-            return JSON.stringify(await transitionAction(workspace, action_ref, transition, { reason, due_at, evidence }, now));
+            const result = await transitionAction(workspace, safeActionRef, transition, { reason, due_at, evidence }, now);
+            await syncGoalRuntime(workspace, new Date(now));
+            return JSON.stringify(result);
         },
     }));
 }
 // ── Core Logic ──────────────────────────────────────────────────────────────
 export async function transitionAction(workspace, ref, transition, options, now) {
-    const filePath = path.join(workspace, ref);
+    const safeRef = normalizeRef(workspace, 'knowledge/actions/index.md', ref);
+    const filePath = path.join(workspace, safeRef);
     // Read current state
     let meta;
     let body;
@@ -87,7 +117,7 @@ export async function transitionAction(workspace, ref, transition, options, now)
         body = doc.body;
     }
     catch (err) {
-        throw new Error(`无法读取 ${ref}: ${err.message}`);
+        throw new Error(`无法读取行动：${safeRef}`);
     }
     const currentStatus = meta.status || 'unknown';
     const allowed = VALID_TRANSITIONS[currentStatus];
@@ -101,7 +131,7 @@ export async function transitionAction(workspace, ref, transition, options, now)
     // Validate active action limit for transitions that result in active
     const newStatus = STATUS_MAP[transition];
     if (newStatus === 'active') {
-        await validateActiveActionLimit(workspace, meta.deal, ref);
+        await validateActiveActionLimit(workspace, meta.deal, safeRef);
     }
     // Update meta
     const updated = { ...meta };
@@ -125,7 +155,7 @@ export async function transitionAction(workspace, ref, transition, options, now)
     await appendBusinessEvent(workspace, {
         occurred_at: now,
         event_type: eventType,
-        action_ref: ref,
+        action_ref: safeRef,
         deal_ref: meta.deal,
         channel: 'chat',
         generated_by: 'dealpilot-dsh',
@@ -133,14 +163,14 @@ export async function transitionAction(workspace, ref, transition, options, now)
     });
     // Update index
     await updateStorageIndex(workspace, 'action', {
-        ref,
+        ref: safeRef,
         ...updated,
         deal_ref: meta.deal,
         updated_at: now,
     });
     return {
         ok: true,
-        ref,
+        ref: safeRef,
         previousStatus: currentStatus,
         newStatus: updated.status,
         transition,

@@ -3,6 +3,8 @@
 // S5 → TS migration.
 
 import * as path from 'node:path';
+import * as fs from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import {
   writeYamlFrontmatter,
   appendBusinessEvent,
@@ -10,21 +12,26 @@ import {
   generateRef,
   readConceptDir,
   resolveWorkspace,
+  normalizeRef,
   type OkfDocument,
   type BusinessEvent,
   type IndexEntry,
 } from './okf-utils.js';
+import { createConfirmation, consumeConfirmation } from './confirmation.js';
+import { importPresentation } from './business-view.js';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
 type ImportFormat = 'csv' | 'markdown' | 'text';
 
 interface ImportArgs {
-  data: string;
-  format: ImportFormat;
+  data?: string;
+  format?: ImportFormat;
+  source_path?: string;
   source_category?: string;
   source_label?: string;
   auto_dedup?: boolean;
+  confirmation_token?: string;
 }
 
 interface ImportRecord {
@@ -68,12 +75,16 @@ export function registerImportTool(ctx: Record<string, any>, harness: any): void
       properties: {
         data: {
           type: 'string',
-          description: '要导入的数据内容（CSV 文本、Markdown 表格或纯文本列表）',
+          description: '要导入的数据内容（可选；不提供时读取 sources/inbox）',
         },
         format: {
           type: 'string',
           enum: ['csv', 'markdown', 'text'],
-          description: '数据格式',
+          description: '数据格式（可选；从 source_path 扩展名推断）',
+        },
+        source_path: {
+          type: 'string',
+          description: 'Workspace 内 sources/inbox 下的文件或目录（可选）',
         },
         source_category: {
           type: 'string',
@@ -87,8 +98,25 @@ export function registerImportTool(ctx: Record<string, any>, harness: any): void
           type: 'boolean',
           description: '是否自动去重（默认 true）',
         },
+        confirmation_token: {
+          type: 'string',
+          description: '用户确认导入预览后返回的一次性确认令牌',
+        },
       },
-      required: ['data', 'format'],
+      required: [],
+    },
+    output: {
+      schema: { type: 'object' },
+      render(_args: any, value: string) {
+        const result = JSON.parse(value);
+        if (result.requires_confirmation) {
+          return [{ type: 'text', text: `${result.message}\nconfirmation_token: ${result.confirmation_token}\npreview: ${JSON.stringify(result.preview || {})}` }];
+        }
+        return [{ type: 'text', text: `导入完成：新增 ${result.created || 0} 条，跳过 ${result.skipped || 0} 条\nDATA_JSON: ${JSON.stringify(result)}` }];
+      },
+      presentationMeta(args: ImportArgs, value: any) {
+        return importPresentation(args, value);
+      },
     },
     async execute(args: ImportArgs): Promise<string> {
       const workspace = resolveWorkspace(ctx.config);
@@ -96,7 +124,41 @@ export function registerImportTool(ctx: Record<string, any>, harness: any): void
         throw new Error('No workspace configured. Set defaultWorkspace in agent preset.');
       }
 
-      const { data, format, source_category, source_label, auto_dedup } = args;
+      const { data: providedData, format: providedFormat, source_path, source_category, source_label, auto_dedup, confirmation_token } = args;
+      const loaded = await loadImportSource(workspace, providedData, providedFormat, source_path);
+      const data = loaded.data;
+      const format = loaded.format;
+      const confirmationPayload = {
+        data_sha256: createHash('sha256').update(data).digest('hex'),
+        format,
+        source_category: source_category || 'import',
+        source_label: source_label || null,
+        auto_dedup: auto_dedup !== false,
+        source_path: loaded.sourcePath,
+      };
+      if (!confirmation_token) {
+        const parsedPreview = await previewImport(workspace, data, format, auto_dedup !== false);
+        const duplicateCount = parsedPreview.duplicates.length;
+        return JSON.stringify(createConfirmation(
+          'dealpilot_import',
+          confirmationPayload,
+          `已解析 ${parsedPreview.total} 条记录，预计新增 ${Math.max(0, parsedPreview.total - duplicateCount)} 条、跳过 ${duplicateCount} 条重复记录。请向用户展示预览，获得明确确认后再重试。`,
+          {
+            format,
+            source_category: source_category || 'import',
+            source_label: source_label || null,
+            source_path: loaded.sourcePath,
+            total: parsedPreview.total,
+            estimated_create: Math.max(0, parsedPreview.total - duplicateCount),
+            duplicate_count: duplicateCount,
+            duplicates: parsedPreview.duplicates,
+            records: parsedPreview.records,
+            warnings: parsedPreview.warnings,
+            auto_dedup: auto_dedup !== false,
+          },
+        ));
+      }
+      consumeConfirmation(confirmation_token, 'dealpilot_import', confirmationPayload);
       const now = new Date().toISOString();
 
       return JSON.stringify(
@@ -109,6 +171,35 @@ export function registerImportTool(ctx: Record<string, any>, harness: any): void
       );
     },
   }));
+}
+
+async function loadImportSource(
+  workspace: string,
+  data?: string,
+  format?: ImportFormat,
+  sourcePath?: string,
+): Promise<{ data: string; format: ImportFormat; sourcePath: string }> {
+  if (data !== undefined && data.trim() !== '') {
+    if (!format) throw new Error('提供 data 时必须指定 format');
+    return { data, format, sourcePath: 'inline' };
+  }
+
+  const requested = sourcePath || 'sources/inbox';
+  if (requested !== 'sources/inbox' && !requested.startsWith('sources/inbox/')) {
+    throw new Error('导入源必须位于 Workspace 的 sources/inbox 目录内');
+  }
+  const normalized = normalizeRef(workspace, 'index.md', requested);
+  const absolute = path.join(workspace, normalized);
+  let stat;
+  try { stat = await fs.stat(absolute); } catch { throw new Error(`找不到导入源：${requested}`); }
+  const files = stat.isDirectory()
+    ? (await fs.readdir(absolute, { withFileTypes: true })).filter(entry => entry.isFile()).map(entry => path.join(absolute, entry.name))
+    : [absolute];
+  if (!files.length) throw new Error(`导入目录为空：${requested}`);
+  const contents = await Promise.all(files.map(file => fs.readFile(file, 'utf8')));
+  const extension = path.extname(files[0]).toLowerCase();
+  const inferred: ImportFormat = format || (extension === '.csv' ? 'csv' : extension === '.md' || extension === '.markdown' ? 'markdown' : 'text');
+  return { data: contents.join('\n'), format: inferred, sourcePath: normalized };
 }
 
 // ── Core Logic ──────────────────────────────────────────────────────────────
@@ -181,7 +272,13 @@ export async function importEntities(
           results.skipped++;
           continue;
         }
-        const ref = await createDealFromImport(workspace, title, record, { now });
+        const customerRef = await resolveImportedCustomer(workspace, record.customer);
+        if (!customerRef) {
+          results.warnings.push(`${title}: 找不到关联客户 ${record.customer}`);
+          results.skipped++;
+          continue;
+        }
+        const ref = await createDealFromImport(workspace, title, { ...record, customer: customerRef }, { now });
         results.created++;
         results.entities.push({ ref, title, entity: 'deal' });
       }
@@ -192,6 +289,24 @@ export async function importEntities(
   }
 
   return results;
+}
+
+export async function previewImport(
+  workspace: string,
+  data: string,
+  format: ImportFormat,
+  autoDedup = true,
+): Promise<{ format: ImportFormat; total: number; records: ImportRecord[]; duplicates: { title: string; ref: string }[]; warnings: string[] }> {
+  const records = format === 'csv' ? parseCSV(data) : format === 'markdown' ? parseMarkdownTable(data) : parseTextList(data);
+  const existing = autoDedup ? await loadExistingCustomers(workspace) : new Map<string, string>();
+  const duplicates: { title: string; ref: string }[] = [];
+  const warnings: string[] = [];
+  for (const record of records) {
+    if (!record.title?.trim()) warnings.push('存在缺少客户名称的记录');
+    const ref = record.title ? findDuplicate(record.title.trim(), existing) : null;
+    if (ref) duplicates.push({ title: record.title.trim(), ref });
+  }
+  return { format, total: records.length, records, duplicates, warnings };
 }
 
 // ── Parsers ─────────────────────────────────────────────────────────────────
@@ -315,6 +430,17 @@ async function loadExistingCustomers(workspace: string): Promise<Map<string, str
   return map;
 }
 
+async function resolveImportedCustomer(workspace: string, value: string): Promise<string | undefined> {
+  const normalized = value.trim();
+  const docs = await readConceptDir(workspace, 'knowledge/customers');
+  if (normalized.startsWith('knowledge/')) {
+    const safe = normalizeRef(workspace, 'knowledge/customers/index.md', normalized);
+    return docs.some(doc => doc.ref === safe) ? safe : undefined;
+  }
+  const matches = docs.filter(doc => String(doc.meta.title || '').trim().toLowerCase() === normalized.toLowerCase());
+  return matches.length === 1 ? matches[0].ref : undefined;
+}
+
 function findDuplicate(title: string, existingMap: Map<string, string>): string | null {
   return existingMap.get(title.toLowerCase()) || null;
 }
@@ -340,6 +466,12 @@ async function createCustomerFromImport(
   const { sourceCategory, sourceLabel, now } = options;
   const ref = generateRef('customer', title);
   const filePath = path.join(workspace, ref);
+  try {
+    await fs.access(filePath);
+    throw new Error(`已存在同名客户：${ref}`);
+  } catch (err: any) {
+    if (err?.code !== 'ENOENT') throw err;
+  }
 
   const meta: Record<string, any> = {
     title,
@@ -394,6 +526,12 @@ async function createDealFromImport(
   const { now } = options;
   const ref = generateRef('deal', title);
   const filePath = path.join(workspace, ref);
+  try {
+    await fs.access(filePath);
+    throw new Error(`已存在同名交易：${ref}`);
+  } catch (err: any) {
+    if (err?.code !== 'ENOENT') throw err;
+  }
 
   const meta: Record<string, any> = {
     title,

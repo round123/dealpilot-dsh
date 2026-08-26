@@ -6,7 +6,7 @@ export interface WorkspaceMetadata {
   id: string;
   name: string;
   created_at: string;
-  setup_status: 'ready';
+  setup_status: 'ready' | 'archived';
   timezone: string;
 }
 
@@ -19,7 +19,7 @@ export interface WorkspaceState {
 export type WorkspaceInspection = {
   id: string;
   name: string;
-  status: 'new' | 'reusable' | 'invalid';
+  status: 'new' | 'reusable' | 'archived' | 'invalid';
   hasDealPilotFiles: boolean;
 };
 
@@ -92,6 +92,9 @@ export async function inspectWorkspace(id: string, explicitPath?: string): Promi
   if (!fullPath) return { id, name: id, status: 'invalid', hasDealPilotFiles: false };
   let metadata: Partial<WorkspaceMetadata> = {};
   try { metadata = JSON.parse(await fs.readFile(path.join(fullPath, '.dsh', 'workspace.json'), 'utf8')); } catch {}
+  if (metadata.setup_status === 'archived') {
+    return { id, name: metadata.name || path.basename(fullPath), status: 'archived', hasDealPilotFiles: true };
+  }
   const markers = ['knowledge/customers', 'knowledge/deals', 'knowledge/actions', 'sources/inbox'];
   let markerCount = 0;
   for (const marker of markers) { try { await fs.access(path.join(fullPath, marker)); markerCount++; } catch {} }
@@ -139,6 +142,7 @@ export async function ensureWorkspace(workspace = defaultWorkspacePath()): Promi
   for (const file of [
     ['knowledge/index.md', '# Sales workspace\n\nThis workspace is managed by DealPilot.\n'],
     ['knowledge/log.md', '# Activity Log\n\n'],
+    ['storage/indexes/dealpilot-runtime.json', '{"goals":[],"workflows":[]}\n'],
   ] as const) {
     try { await fs.access(path.join(resolved, file[0])); }
     catch { await fs.writeFile(path.join(resolved, file[0]), file[1], 'utf-8'); }

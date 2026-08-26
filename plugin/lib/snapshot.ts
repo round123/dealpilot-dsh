@@ -6,11 +6,13 @@ import {
   readYamlFrontmatter,
   readConceptDir,
   validateWorkspace,
-  todayString,
   resolveWorkspace,
   type OkfDocument,
   type IndexEntry,
 } from './okf-utils.js';
+import { reconcileGoalRuntime, type DealPilotRuntime } from './goal-runtime.js';
+import { buildOperationalViews, type OperationalViews } from './operational-views.js';
+import { snapshotPresentation } from './business-view.js';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -97,6 +99,9 @@ interface ActivityItem {
   deal_ref?: string;
   source_ref?: string;
   channel: string;
+  summary?: string;
+  previous_stage?: string;
+  next_stage?: string;
 }
 
 interface Snapshot {
@@ -116,6 +121,8 @@ interface Snapshot {
   deals: DealSnapshot[];
   funnel: FunnelStage[];
   activity: ActivityItem[];
+  operations: OperationalViews;
+  runtime: DealPilotRuntime;
   warnings: { ref?: string; message: string }[];
 }
 
@@ -140,7 +147,10 @@ Workspace 由当前 DealPilot 会话绑定，不接受客户端路径参数。`,
       schema: { type: 'object' },
       render(_agent: any, value: string) {
         const s: Snapshot = JSON.parse(value);
-        return [{ type: 'text', text: formatSnapshotSummary(s) }];
+        return [{ type: 'text', text: `${formatSnapshotSummary(s)}\nDATA_JSON: ${JSON.stringify(s)}` }];
+      },
+      presentationMeta(_args: any, value: Snapshot) {
+        return snapshotPresentation(value);
       },
     },
     async execute(_args: Record<string, never>) {
@@ -156,7 +166,7 @@ export async function buildSnapshot(workspace: string, now = new Date()): Promis
   const warnings: { ref?: string; message: string }[] = [];
 
   if (!(await validateWorkspace(workspace))) {
-    throw new Error(`DealPilot workspace is not ready: ${workspace}`);
+    throw new Error('当前 DealPilot Workspace 尚未初始化或结构不完整');
   }
 
   const customers = await readConceptDir(workspace, 'knowledge/customers');
@@ -179,7 +189,7 @@ export async function buildSnapshot(workspace: string, now = new Date()): Promis
       customerByRef.set(customer.ref, customer);
       customerList.push(customer);
     } catch (err: any) {
-      warnings.push({ ref: doc.ref, message: err.message });
+      warnings.push({ ref: doc.ref, message: '客户文件无法解析，已跳过' });
     }
   }
 
@@ -194,13 +204,14 @@ export async function buildSnapshot(workspace: string, now = new Date()): Promis
       dealByRef.set(deal.ref, deal);
       dealList.push(deal);
     } catch (err: any) {
-      warnings.push({ ref: doc.ref, message: err.message });
+      warnings.push({ ref: doc.ref, message: '交易文件无法解析，已跳过' });
     }
   }
 
   applyCustomerPriorities(customerList, dealList);
   const todayItems = buildToday(actions, dealByRef, customerByRef, now);
   const funnel = buildFunnel(dealList);
+  const runtime = await reconcileGoalRuntime(workspace, actions, now, false);
   const { activity, eventWarnings } = await readBusinessEvents(workspace);
   warnings.push(...eventWarnings);
 
@@ -221,6 +232,8 @@ export async function buildSnapshot(workspace: string, now = new Date()): Promis
     confirmation: todayItems.filter(t => t.bucket === 'confirmation').length,
   };
 
+  const operations = buildOperationalViews({ customers: customerList, deals: dealList, today: todayItems, activity }, now);
+
   return {
     generated_at: now.toISOString(),
     latest_event_at: activity[0]?.occurred_at,
@@ -231,6 +244,8 @@ export async function buildSnapshot(workspace: string, now = new Date()): Promis
     deals: dealList,
     funnel,
     activity: activity.slice(0, 30),
+    operations,
+    runtime,
     warnings,
   };
 }
@@ -387,7 +402,7 @@ function buildToday(
   customerByRef: Map<string, CustomerSnapshot>,
   _now: Date,
 ): TodayItem[] {
-  const today = todayString();
+  const today = _now.toISOString().slice(0, 10);
   const items: TodayItem[] = [];
 
   for (const actionDoc of actions) {
@@ -401,18 +416,25 @@ function buildToday(
     const deal = dealByRef.get(action.deal_ref || '');
     const customer = deal ? customerByRef.get(deal.customer_ref || '') : null;
 
-    let bucket = 'today';
+    let bucket: string | undefined;
     let reason: string | undefined;
 
-    if (action.due_at && action.due_at < today) {
+    if (action.status === 'active' && action.due_at && action.due_at < today) {
       bucket = 'overdue';
+    } else if (action.status === 'active' && action.due_at === today) {
+      bucket = 'today';
+    } else if (action.status === 'active' && actionDoc.meta.requires_human === true) {
+      bucket = 'confirmation';
+      reason = action.reason || '需要人工确认';
     } else if (action.status === 'blocked') {
       bucket = 'risk';
       reason = action.reason || 'Blocked';
-    } else if (deal && isRiskDeal(deal)) {
+    } else if (deal && (isRiskDeal(deal) || deal.priority === 'P1')) {
       bucket = 'risk';
-      reason = deal.risk_summary || 'High risk deal';
+      reason = deal.risk_summary || (deal.priority === 'P1' ? 'P1 交易需要推进' : 'High risk deal');
     }
+
+    if (!bucket) continue;
 
     items.push({
       bucket,
@@ -475,6 +497,9 @@ async function readBusinessEvents(workspace: string): Promise<{
           deal_ref: event.deal_ref,
           source_ref: event.source_ref,
           channel: event.channel,
+          summary: event.summary,
+          previous_stage: event.previous_stage,
+          next_stage: event.next_stage,
         });
       } catch {
         warnings.push({ message: `Invalid JSONL line ${i + 1} in business-events.jsonl` });
@@ -482,7 +507,7 @@ async function readBusinessEvents(workspace: string): Promise<{
     }
   } catch (err: any) {
     if (err.code !== 'ENOENT') {
-      warnings.push({ message: `Failed to read business-events.jsonl: ${err.message}` });
+      warnings.push({ message: '业务事件文件无法读取，已跳过' });
     }
   }
 
@@ -499,6 +524,7 @@ function conceptActivity(docs: OkfDocument[]): ActivityItem[] {
       customer_ref: d.meta.customer,
       deal_ref: d.meta.deal || (d.ref.includes('/deals/') ? d.ref : undefined),
       channel: 'import',
+      summary: d.meta.title,
     }))
     .sort((a, b) => String(b.occurred_at || '').localeCompare(String(a.occurred_at || '')));
 }
@@ -615,6 +641,7 @@ function formatSnapshotSummary(snapshot: Snapshot): string {
     `| Overdue | ${s.overdue} |`,
     `| At Risk | ${s.risks} |`,
     `| Needs Confirmation | ${s.confirmation} |`,
+    `| Active Goals | ${(snapshot.runtime?.goals || []).filter(goal => goal.status === 'active' || goal.status === 'planned').length} |`,
     '',
   ];
 

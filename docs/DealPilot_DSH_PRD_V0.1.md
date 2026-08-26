@@ -1,5 +1,7 @@
 # DealPilot DSH 产品需求文档（PRD）V0.1
 
+> **DSH 路由约定（当前实现）**：`/` 保持原始 DSH 对话页面；`/dealpilot` 是 DealPilot 专属对话工作台，使用固定 `dealpilot-sales` preset、单 Workspace 和业务视图。下文涉及 DealPilot 侧栏、业务上下文和看板时，均指 `/dealpilot`，不表示向 `/` 注入 UI。WhatsApp Chrome 扩展及其实际闭环不在本轮落地范围，相关条目保留为后续能力。
+
 > **一句话定位**：运行在 DeepSeek Harness 上的 AI 原生销售工作台。用户通过 DSH 对话完成客户与交易操作，通过 DSH 侧边栏面板掌握任务、风险和进度。数据以 OKF 文件（Markdown + YAML）保存在本地，一切可追溯。
 
 ---
@@ -260,9 +262,10 @@ DSH 自动管理的会话记录，替代 Codex 版的 `user-commands.jsonl`：
 **描述**：创建或更新 Customer、Deal、Action。自动处理 YAML frontmatter 格式、追加 business-events.jsonl 事件、更新 Storage 索引。支持的操作类型由 `operation` 参数指定。
 
 **参数**：
-- `operation`：`create` | `update` | `archive`
+- `operation`：`create` | `update` | `archive` | `merge`（当前仅支持 customer 合并）
 - `entity`：`customer` | `deal` | `action`
 - `ref?`：更新/归档时的目标引用
+- `source_ref?`：合并时的来源客户引用；目标 `ref` 保留，来源记录会归档并记录 `merged_into`
 - `fields`：要写入的字段（JSON 对象）
 
 **返回**：操作结果 + 新 ref
@@ -507,33 +510,33 @@ Agent：
 
 ### 9.1 功能门槛
 
-- [ ] 用户能把真实业务文件放入 `sources/inbox/`，通过对话导入并生成 OKF
-- [ ] 用户无需连接 WhatsApp，即可从 10-50 个客户生成客户池
-- [ ] 用户无需直接编辑 Markdown，能通过对话纠正客户和 Deal
-- [ ] 用户能通过对话新增、修改、归档 Customer 和 Deal
-- [ ] 用户能通过对话完成、取消、阻塞和安排 Action
-- [ ] 侧边栏能不调用 LLM 显示 Today 摘要
-- [ ] 完整工作台能显示 Customers、Deals、Funnel、Activity
-- [ ] 工作台刷新后反映最近一次对话写入
-- [ ] Today 结果在相同 OKF 状态下可重复计算
+- [x] 用户能把真实业务文件放入 `sources/inbox/`，通过对话导入并生成 OKF
+- [x] 用户无需连接 WhatsApp，即可从 10-50 个客户生成客户池
+- [x] 用户无需直接编辑 Markdown，能通过对话纠正客户和 Deal
+- [x] 用户能通过对话新增、修改、归档和合并 Customer，以及新增、修改、归档 Deal
+- [x] 用户能通过对话完成、取消、阻塞和安排 Action
+- [x] 侧边栏能不调用 LLM 显示 Today 摘要
+- [x] 完整工作台能显示 Customers、Deals、Funnel、Activity
+- [x] 工作台刷新后反映最近一次对话写入
+- [x] Today 结果在相同 OKF 状态下可重复计算
 - [ ] 当前 WhatsApp 对话可关联到 OKF 中的客户和 Deal
 - [ ] 新消息可更新 Deal 状态
 - [ ] 用户能查看证据、批准草稿并插入 WhatsApp 输入框
-- [ ] 重启 DSH 后业务状态仍可从 OKF 恢复
+- [x] 重启 DSH 后业务状态仍可从 OKF 恢复
 
 ### 9.2 性能门槛
 
-- [ ] 20 个活跃 Deal 的 Snapshot 在普通设备上 < 1 秒
-- [ ] 侧边栏打开后不启动 LLM Turn
-- [ ] 单个无效概念文件不导致整个 Snapshot 失败
-- [ ] DSH 不可用时，历史 OKF 仍可直接读取
+- [x] 20 个活跃 Deal 的 Snapshot 在普通设备上 < 1 秒
+- [x] 侧边栏打开后不启动 LLM Turn
+- [x] 单个无效概念文件不导致整个 Snapshot 失败
+- [x] DSH 不可用时，历史 OKF 仍可直接读取
 
 ### 9.3 安全门槛
 
-- [ ] 对外消息默认由用户最终发送（0 次自动发送）
-- [ ] 归档、合并、成交、失单需要用户确认
-- [ ] 金额、交期、身份冲突不能静默确认
-- [ ] Workspace 路径由用户显式配置
+- [x] 对外消息默认由用户最终发送（0 次自动发送）
+- [x] 归档、合并、成交、失单需要用户确认
+- [x] 金额、交期、身份冲突不能静默确认
+- [x] Workspace 由用户在 DSH Workspace Registry 中显式选择
 
 ---
 

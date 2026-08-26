@@ -54,8 +54,19 @@ test('A2A tool contract registers all DealPilot tools', async () => {
 test('Harness client leaves the native DSH surface clean', async () => {
   const clientBundle = await readFile(path.join(root, 'plugin', 'client', 'client.js'), 'utf8');
   assert.match(clientBundle, /__ModuleLoader__\.load/);
+  // The bundle declares the injected services as a multiline `const inject`
+  // array before registering with the DSH loader.
+  assert.match(clientBundle, /const inject = \[\s*['"]slots['"],[\s\S]*['"]sessions['"],[\s\S]*['"]workspaces['"],[\s\S]*['"]connection['"],?\s*\]/);
+  assert.match(clientBundle, /agentPresets\?\.select/);
   assert.doesNotMatch(clientBundle, /sidebar\.footer\.action/);
   assert.doesNotMatch(clientBundle, /DealPilot Workspace/);
+  assert.doesNotMatch(clientBundle, /getSessions\(\)\?\.clear/);
+});
+
+test('DealPilot compatibility APIs use the owned default workspace only', async () => {
+  const hostBundle = await readFile(path.join(root, 'plugin', 'lib', 'index.js'), 'utf8');
+  assert.match(hostBundle, /defaultWorkspacePath\(\)/);
+  assert.doesNotMatch(hostBundle, /resolveWorkspace\(toolCtx\.config\)/);
 });
 
 test('DealPilot client exposes the business workbench interaction contract', async () => {
@@ -78,6 +89,15 @@ test('DealPilot client exposes the business workbench interaction contract', asy
     'dealpilot-context',
     'dealpilot-workbench',
     '打开完整工作台',
+    '周复盘',
+    '高风险交易',
+    '停滞交易',
+    '交易生命周期',
+    '行动生命周期',
+    '导入中心',
+    '工作区设置',
+    'refreshSessionHistory',
+    '/api/dealpilot/import/preview',
   ]) {
     assert.ok(clientBundle.includes(marker), `${marker} must remain in the DealPilot workbench`);
   }
@@ -95,8 +115,12 @@ test('route client mounts the persistent business context and full workbench in 
   </style></head><body><div class="host">
     <aside data-pane="sidebar"><button class="native-newSession">New session</button><div class="sidebar-region"><div data-slot="sidebar.workspaces"><button class="native-workspace">Workspace</button></div></div></aside>
     <main data-pane="conversation"><div class="conversation-main"><textarea placeholder="描述你想要构建的内容"></textarea></div></main>
-  </div><script>window.__ModuleLoader__={load(value){window.__clientApply=value.factory().apply}}</script>
-  <script>${clientBundle.replaceAll('</script>', '<\\/script>')}</script><script>window.__clientApply({get(){return undefined}})</script></body></html>`;
+  </div><script>
+    const nativeSessions={async create({workspaceId}){window.__nativeCreateWorkspaceId=workspaceId;return {ok:true,value:{sessionId:'native-fixture-session',agentPreset:'dealpilot-sales'}}},async refresh(){},open(id){window.__nativeSessionId=id},list:{getSnapshot(){return {byId:{'native-fixture-session':{sessionId:'native-fixture-session'}}}}}};
+    const connection={api:{agentPresets:{async select({sessionId,agentPreset}){window.__nativePresetRequest={sessionId,agentPreset};return {result:{ok:true,value:{agentPreset}}}}}}};
+    window.__ModuleLoader__={load(value){const plugin=value.factory(()=>{});window.__clientApply=plugin.apply;window.__clientInject=plugin.inject}};
+  </script>
+  <script>${clientBundle.replaceAll('</script>', '<\\/script>')}</script><script>window.__clientApply({sessions:nativeSessions,connection,get(name){return name==='sessions'?nativeSessions:name==='connection'?connection:undefined}})</script></body></html>`;
   const server = createServer((req, res) => {
     if (req.url === '/dealpilot') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(pageHtml); return;
@@ -123,12 +147,15 @@ test('route client mounts the persistent business context and full workbench in 
     await page.goto(`http://127.0.0.1:${port}/dealpilot`);
     await page.locator('#dealpilot-workspace-select').selectOption('dealpilot/fixture');
     await page.getByText('优先处理').waitFor({ state: 'visible' });
-    assert.equal(await page.getByRole('button', { name: '客户', exact: true }).count(), 0, 'business navigation must not live in the left sidebar');
+    assert.deepEqual(await page.evaluate(() => window.__clientInject), ['slots', 'sessions', 'workspaces', 'connection']);
+    assert.equal(await page.evaluate(() => window.__nativeCreateWorkspaceId), 'dealpilot/fixture');
+    assert.equal(await page.evaluate(() => window.__nativeSessionId), 'native-fixture-session');
+    assert.equal(await page.locator('.dealpilot-nav').isVisible(), true, 'DealPilot navigation should be visible in its product sidebar');
     assert.match(await page.locator('.dealpilot-context').textContent(), /逾期/);
     assert.match(await page.locator('.dealpilot-context').textContent(), /Send revised proposal/);
 
     await page.getByRole('button', { name: /打开完整工作台/ }).click();
-    await page.getByRole('button', { name: '客户', exact: true }).click();
+    await page.getByLabel('销售工作台导航').getByRole('button', { name: '客户', exact: true }).click();
     await page.getByRole('button', { name: /Acme Corp/ }).click();
     assert.match(await page.locator('.dealpilot-board-detail').textContent(), /关系阶段/);
     assert.equal(await page.getByLabel('排序当前视图').isVisible(), true);
@@ -141,58 +168,9 @@ test('route client mounts the persistent business context and full workbench in 
   }
 });
 
-test('A2A DealPilot shell reuses DSH conversation and renders business views', async () => {
-  const { chromium } = await import(pathToFileURL(path.join(root, 'plugin', 'node_modules', 'playwright', 'index.mjs')).href);
+test('Legacy DealPilot shell is a redirect and never embeds the DSH page', async () => {
   const html = await readFile(shellPath, 'utf8');
-  const server = createServer((req, res) => {
-    if (req.url === '/api/dealpilot/workspaces') {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ workspaces: [{ id: 'dealpilot/fixture', name: 'A2A Fixture Workspace', status: 'reusable' }] }));
-      return;
-    }
-    if (req.url === '/api/dealpilot/workspaces/inspect') {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ id: 'dealpilot/fixture', name: 'A2A Fixture Workspace', status: 'reusable', hasDealPilotFiles: true }));
-      return;
-    }
-    if (req.url?.startsWith('/api/dealpilot/snapshot')) {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify(snapshot));
-      return;
-    }
-    if (req.url === '/dealpilot') {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-      res.end(html);
-      return;
-    }
-    if (req.url === '/') {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-      res.end('<!doctype html><title>DeepSeek Harness</title><main>DSH default conversation</main>');
-      return;
-    }
-    res.writeHead(404);
-    res.end();
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const { port } = server.address();
-  const browser = await chromium.launch({ headless: true });
-  try {
-    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
-    await page.goto(`http://127.0.0.1:${port}/dealpilot`);
-    await page.locator('#workspace').selectOption('dealpilot/fixture');
-    await assert.doesNotReject(() => page.getByText(/已检测到 DealPilot 数据/).waitFor({ state: 'visible' }));
-    assert.match(await page.locator('#business-content').textContent(), /Acme Renewal/);
-    assert.match(await page.locator('#dsh-conversation').contentFrame().locator('main').textContent(), /DSH default conversation/);
-
-    await page.getByRole('button', { name: '客户' }).click();
-    await assert.doesNotReject(() => page.getByText('Acme Corp').waitFor({ state: 'visible' }));
-    assert.match(await page.locator('#business-content').textContent(), /Acme Corp/);
-
-    const artifactDir = path.join(root, 'tests', 'artifacts');
-    await mkdir(artifactDir, { recursive: true });
-    await page.screenshot({ path: path.join(artifactDir, 'a2a-dealpilot-shell.png'), fullPage: true });
-  } finally {
-    await browser.close();
-    await new Promise((resolve) => server.close(resolve));
-  }
+  assert.doesNotMatch(html, /<iframe\b/i);
+  assert.match(html, /url=\/dealpilot/);
+  assert.match(html, /href="\/dealpilot"/);
 });

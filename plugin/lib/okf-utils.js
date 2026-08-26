@@ -38,12 +38,11 @@ export async function appendBusinessEvent(workspace, event) {
     await fs.appendFile(eventsPath, line, 'utf-8');
 }
 // ── Storage Index ───────────────────────────────────────────────────────────
-function storageRoot() {
-    const dshHome = process.env.DSH_HOME || path.join(process.env.HOME || process.env.USERPROFILE || '.', '.dsh');
-    return path.join(dshHome, 'storages', 'dealpilot');
+function storageRoot(workspace) {
+    return path.join(workspace, 'storage', 'indexes');
 }
-export async function readStorageIndex(_workspace, entity) {
-    const indexDir = storageRoot();
+export async function readStorageIndex(workspace, entity) {
+    const indexDir = storageRoot(workspace);
     const indexPath = path.join(indexDir, `${entity}.json`);
     try {
         const raw = await fs.readFile(indexPath, 'utf-8');
@@ -56,11 +55,11 @@ export async function readStorageIndex(_workspace, entity) {
         throw err;
     }
 }
-export async function updateStorageIndex(_workspace, entity, data) {
+export async function updateStorageIndex(workspace, entity, data) {
     if (!data.ref) {
         throw new Error('updateStorageIndex: entry must have a "ref" field');
     }
-    const indexDir = storageRoot();
+    const indexDir = storageRoot(workspace);
     const indexPath = path.join(indexDir, `${entity}.json`);
     let entries = [];
     try {
@@ -150,10 +149,13 @@ export async function validateWorkspace(workspace) {
     for (const dir of requiredDirs) {
         const dirPath = path.join(knowledgeDir, dir);
         try {
-            await fs.mkdir(dirPath, { recursive: true });
+            const stat = await fs.stat(dirPath);
+            if (!stat.isDirectory())
+                return false;
         }
         catch {
-            // non-fatal
+            // A read-only snapshot must not repair or mutate the workspace.
+            return false;
         }
     }
     return true;

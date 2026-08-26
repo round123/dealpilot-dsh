@@ -9,6 +9,7 @@ import {
   type IndexEntry,
   type OkfDocument,
 } from './okf-utils.js';
+import { searchPresentation } from './business-view.js';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -71,6 +72,16 @@ export function registerSearchTool(ctx: Record<string, any>, harness: any) {
         },
       },
       required: [],
+    },
+    output: {
+      schema: { type: 'object' },
+      render(_args: any, value: string) {
+        const result = JSON.parse(value);
+        return [{ type: 'text', text: `找到 ${result.count || 0} 条销售对象\nDATA_JSON: ${JSON.stringify(result)}` }];
+      },
+      presentationMeta(_args: SearchParams, value: SearchResults) {
+        return searchPresentation(value);
+      },
     },
     async execute(args: SearchParams) {
       const workspace = resolveWorkspace(ctx.config);

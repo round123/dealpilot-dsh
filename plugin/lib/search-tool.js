@@ -2,6 +2,7 @@
 // Fuzzy search across customers, deals, and actions.
 // Prefers storage index, falls back to scanning OKF files.
 import { readStorageIndex, readConceptDir, resolveWorkspace, } from './okf-utils.js';
+import { searchPresentation } from './business-view.js';
 // ── Registration ────────────────────────────────────────────────────────────
 export function registerSearchTool(ctx, harness) {
     harness.registerTool(ctx, harness.defineTool({
@@ -33,6 +34,16 @@ export function registerSearchTool(ctx, harness) {
                 },
             },
             required: [],
+        },
+        output: {
+            schema: { type: 'object' },
+            render(_args, value) {
+                const result = JSON.parse(value);
+                return [{ type: 'text', text: `找到 ${result.count || 0} 条销售对象\nDATA_JSON: ${JSON.stringify(result)}` }];
+            },
+            presentationMeta(_args, value) {
+                return searchPresentation(value);
+            },
         },
         async execute(args) {
             const workspace = resolveWorkspace(ctx.config);

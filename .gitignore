@@ -3,3 +3,5 @@ node_modules/
 *.js.map
 .DS_Store
 tests/artifacts/
+.dsh-server*.log
+plugin/client-build-temp-*/

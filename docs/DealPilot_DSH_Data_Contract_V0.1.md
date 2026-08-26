@@ -165,7 +165,7 @@ generated:
 ```json
 {
   "occurred_at": "2026-08-05T15:30:00Z",
-  "event_type": "customer.created | customer.updated | customer.archived | deal.created | deal.updated | deal.stage_changed | deal.risk_changed | deal.archived | action.created | action.completed | action.cancelled | action.blocked | action.reopened | action.scheduled | evidence.appended",
+  "event_type": "customer.created | customer.updated | customer.archived | customer.merged | deal.created | deal.updated | deal.stage_changed | deal.risk_changed | deal.archived | action.created | action.completed | action.cancelled | action.blocked | action.reopened | action.scheduled | evidence.appended",
   "customer_ref": "knowledge/customers/acme-corp.md",
   "deal_ref": "knowledge/deals/acme-corp.md",
   "action_ref": "knowledge/actions/xxx.md",
@@ -203,7 +203,9 @@ generated:
 
 ```
 Tool: dealpilot_snapshot
-参数: { workspacePath?: string }
+参数: {}
+
+Workspace 由当前 DealPilot session 绑定，工具不接受客户端路径参数。
 ```
 
 ### 3.2 响应
@@ -366,6 +368,10 @@ Tool: dealpilot_snapshot
 }
 ```
 
+`operation: "merge"` 仅用于合并两个 customer。`ref` 是保留的目标客户，
+`source_ref` 是来源客户。首次调用只返回冲突预览和一次性确认令牌；确认后来源客户
+会被标记为 `archived`，记录 `merged_into`，并将其关联的 Deal/Contact 改指向目标客户。
+
 ### 4.2 dealpilot_action_transition
 
 **输入**：
@@ -502,7 +508,7 @@ Tool: dealpilot_snapshot
 
 ### 5.1 客户索引
 
-**文件路径**：`~/.dsh/storages/dealpilot/customers.json`
+**文件路径**：`<workspace>/storage/indexes/customer.json`
 
 ```json
 [
@@ -522,7 +528,7 @@ Tool: dealpilot_snapshot
 
 ### 5.2 交易索引
 
-**文件路径**：`~/.dsh/storages/dealpilot/deals.json`
+**文件路径**：`<workspace>/storage/indexes/deal.json`
 
 ```json
 [
@@ -544,7 +550,7 @@ Tool: dealpilot_snapshot
 
 ### 5.3 行动索引
 
-**文件路径**：`~/.dsh/storages/dealpilot/actions.json`
+**文件路径**：`<workspace>/storage/indexes/action.json`
 
 ```json
 [
@@ -659,7 +665,23 @@ Content-Type: application/json
 
 ---
 
-## 7. Today 确定性规则
+## 7. Session、确认与运行时投影
+
+### 7.1 Session 绑定
+
+DealPilot session 持久化在 DSH storage 中，仅保存 `sessionId`、`workspaceId`、名称、preset 和创建时间；真实路径每次通过 DSH workspace registry 解析，绝不返回给浏览器。
+
+### 7.2 写入确认
+
+`dealpilot_write`、`dealpilot_action_transition` 和 `dealpilot_import` 首次调用只返回预览和一次性 `confirmation_token`，不会修改 OKF。只有用户明确批准后，Agent 才能使用同一 token 重试；token 绑定当前 session，15 分钟后失效且只能消费一次。
+
+### 7.3 Goal / Workflow 运行时投影
+
+每个 Action 映射为 `<workspace>/storage/indexes/dealpilot-runtime.json` 中的 Goal；`today-follow-up` Workflow 聚合 active/planned Goal。Action 状态转换会同步更新该文件，Snapshot 同时返回 `runtime.goals` 和 `runtime.workflows`。
+
+---
+
+## 8. Today 确定性规则
 
 ### 7.1 分类规则
 
@@ -701,7 +723,7 @@ new → qualified → contacted → replied → opportunity → quoted → sampl
 
 ---
 
-## 8. 错误码
+## 9. 错误码
 
 | 错误 | 含义 |
 |---|---|

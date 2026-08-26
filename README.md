@@ -1,116 +1,174 @@
 # DealPilot DSH
 
-> AI 原生销售工作台 — 纯 DSH Cordis 插件。
-> `/` 保持原始 DeepSeek Harness 对话体验；`/dealpilot` 提供固定销售 Agent、单 Workspace 和业务看板的原生 DSH 对话工作台。
+DealPilot 是运行在 DeepSeek Harness 上的 AI 原生销售工作台。它复用 DSH 的原生对话、会话、模型和工具运行时，把客户、交易和跟进任务放在同一个 Workspace 中管理。
 
-## 架构
+## 路由
 
-**纯插件，零侵入。** DealPilot 使用独立的 `dealpilot-sales` Agent preset；默认 DSH 会话和页面不被修改。
+| 地址 | 用途 |
+| --- | --- |
+| `/` | 原始 DSH 对话页面。默认 Workspace、会话和 Agent 行为保持原样。 |
+| `/dealpilot` | DealPilot 销售工作台。固定使用 `dealpilot-sales` Agent，并提供业务上下文和看板视图。 |
 
-```
-dealpilot-dsh/
-├── plugin/                     ← DSH Cordis 插件
-│   ├── package.json
-│   ├── cordis.patch.yml
-│   ├── tsconfig.json
-│   ├── lib/                    ← 6 个工具 (TypeScript)
-│   │   ├── index.ts            ← 入口：注册工具 + HTTP 路由
-│   │   ├── okf-utils.ts        ← OKF 读写 + 工作区自动检测
-│   │   ├── snapshot.ts
-│   │   ├── write-tool.ts
-│   │   ├── action-tool.ts
-│   │   ├── import-tool.ts
-│   │   ├── search-tool.ts
-│   │   └── whatsapp-tool.ts
-│   ├── agent-preset/           ← dealpilot-sales Agent preset
-│   └── client/                 ← /dealpilot 路由级 UI
-│       ├── client.ts           ← 仅在 /dealpilot 增强原生 DSH 页面
-│       ├── dealpilot-shell.html ← /dealpilot 页面 Shell
-│       └── dashboard.html      ← 旧版兼容页面
-├── docs/                       ← 设计文档
-├── extension/                  ← Chrome 扩展（待开发）
-└── workspace-template/         ← OKF Workspace 模板
-```
-
-## 两种使用方式
-
-### 方式 1：对话查询（方案 C）
-
-在 DSH 对话中直接用自然语言操作：
-
-> "帮我看看今天的任务"
-> "搜索德国市场的客户"
-> "把 Acme 标记为高风险"
-
-Agent 调用 `dealpilot_*` 工具，返回格式化结果。
-
-### 方式 2：DealPilot 工作台
-
-安装后访问 **`http://127.0.0.1:3080/dealpilot`**。首次进入必须选择一个 DSH Workspace；已有 DealPilot 文件会自动复用，空 Workspace 可在页面中显式初始化。进入后新建对话自动绑定 `dealpilot-sales`，默认 `/` 不受影响。
-
-DealPilot 页面复用原生 DSH 对话作为主区域，并在右侧提供客户、交易和任务业务视图。默认对话页本身不被插件修改。
+DealPilot 不替换 DSH 默认页面，也不需要用户手动编辑本地目录或 Markdown 文件。
 
 ## 快速开始
 
-### 1. 编译
+### 环境要求
+
+- 已安装并能运行 `dsh` CLI
+- Node.js 22 或更高版本
+- pnpm 9 或更高版本
+
+### 安装插件
+
+从 GitHub Release 下载压缩包并解压为一个插件目录，然后在 DSH web profile 中安装：
+
+```powershell
+dsh plugin --profile web add D:\path\to\dealpilot-dsh
+```
+
+本地开发也可以直接使用仓库目录：
+
+```powershell
+cd D:\Ai Native\dealpilot-dsh\plugin
+pnpm install
+pnpm exec tsc
+dsh plugin --profile web add .
+```
+
+### 启动
+
+```powershell
+dsh web --no-open
+```
+
+打开：
+
+- 原生 DSH：<http://127.0.0.1:3080/>
+- DealPilot：<http://127.0.0.1:3080/dealpilot>
+
+### 首次进入 DealPilot
+
+1. 打开 `/dealpilot`。
+2. 在首屏选择一个 DSH Workspace。
+3. DealPilot 检查 Workspace 是否已有业务资料：
+   - `可复用`：直接进入销售工作台。
+   - `新工作区`：点击“初始化并进入”，只创建 DealPilot 所需目录和元数据。
+4. 进入后，新建对话会自动绑定当前 Workspace 和 `dealpilot-sales` Agent preset。
+
+初始化是幂等的，不会覆盖已有客户、交易、行动或事件文件。切换 Workspace 会创建新的 DealPilot 对话上下文，旧会话仍保留。
+
+## 工作台能力
+
+DealPilot 页面由原生 DSH Conversation/Composer 加上产品业务视图组成：
+
+- 今日工作、周复盘、高风险交易、停滞交易
+- 客户、交易和跟进任务列表
+- 漏斗、交易生命周期、行动生命周期和活动时间线
+- 搜索、字段筛选、排序和详情面板
+- 导入中心：CSV、Markdown 表格和纯文本预览、去重、确认写入
+- 客户/交易/行动的创建、更新、归档和确认流程
+- Action 的完成、取消、阻塞、重开和安排
+- Goal/Workflow 运行时投影
+- Workspace 快照导出和归档
+
+业务视图中的写入操作先展示变更预览，得到明确确认后才写入 OKF，并追加业务事件。
+
+## Agent 和工具
+
+`/dealpilot` 新建的会话固定使用 `dealpilot-sales`：
+
+| 工具 | 能力 |
+| --- | --- |
+| `dealpilot_snapshot` | 读取 Today、客户、交易、漏斗、行动和活动快照 |
+| `dealpilot_write` | 创建、更新、归档 Customer/Deal/Action；支持 Customer 合并 |
+| `dealpilot_action_transition` | 完成、取消、阻塞、重开或安排 Action |
+| `dealpilot_import` | 预览、去重并导入 `sources/inbox/` 中的资料 |
+| `dealpilot_search` | 按名称模糊搜索，并按市场、阶段、风险等字段筛选 |
+| `dealpilot_whatsapp` | 保留工具协议；Chrome 扩展实际闭环暂未包含 |
+
+所有业务工具都从当前 DealPilot session 读取 Workspace。客户端不能传入任意绝对路径；没有绑定 Workspace 时，工具会返回“请先选择 DealPilot Workspace”。高影响操作必须使用一次性确认 token，系统不会自动发送外部消息。
+
+## Workspace 数据
+
+Workspace 使用 OKF 文件作为权威数据源，Storage index 用于加速查询：
+
+```text
+<workspace>/
+├── .dsh/workspace.json
+├── knowledge/
+│   ├── customers/*.md
+│   ├── deals/*.md
+│   ├── actions/*.md
+│   ├── contacts/*.md
+│   ├── products/*.md
+│   └── events/business-events.jsonl
+├── sources/inbox/              # 待导入资料
+└── storage/indexes/            # 查询索引和 DealPilot runtime
+```
+
+真实路径由 DSH Workspace Registry 解析，不返回给浏览器，也不应该写入对话内容。
+
+## HTTP API
+
+插件提供以下页面级接口：
+
+```text
+GET  /api/dealpilot/workspaces
+POST /api/dealpilot/workspaces/inspect
+POST /api/dealpilot/workspaces/initialize
+POST /api/dealpilot/session
+GET  /api/dealpilot/session/:id
+POST /api/dealpilot/session/:id/workspace
+GET  /api/dealpilot/sessions?workspaceId=...
+GET  /api/dealpilot/snapshot?workspaceId=...
+POST /api/dealpilot/import/preview
+GET  /api/dealpilot/export?workspaceId=...
+```
+
+兼容接口 `/api/dealpilot/bootstrap`、`/customers`、`/deals`、`/actions`、`/events`、`/weekly-review`、`/risk` 和 `/stalled` 仍然保留。
+
+## 开发和测试
 
 ```powershell
 cd plugin
 pnpm install
-pnpm exec tsc
+pnpm exec tsc --noEmit
+cd ..
+node --test tests/*.test.mjs
+node --check plugin/client/client.js
+git diff --check
 ```
 
-### 2. 安装插件
+当前验收覆盖 A2A 工具契约、Workspace/session 持久化、导入预览和去重、写入确认、Customer merge、搜索筛选、Goal/Workflow、20 个 Deal 性能、路径安全、损坏文件容错以及 Playwright 浏览器交互。
 
-```powershell
-dsh plugin --profile web add dealpilot-dsh
+## 发布
+
+推送到 `master` 会触发 `.github/workflows/build.yml`：
+
+1. 安装依赖并编译 TypeScript。
+2. 运行全部 Node 测试和 Chromium 测试。
+3. 生成 `dealpilot-dsh-<commit>.tar.gz` 和 `.zip` 构建产物。
+4. 将可直接安装的插件同步到 `dist` 分支。
+
+GitHub Actions 页面中的构建 Artifacts 可用于本地安装；Release 页面应使用同一构建产物。
+
+## 当前边界
+
+- WhatsApp Chrome 扩展的消息抓取、草稿批准和输入框插入是本版本唯一未交付的产品闭环。
+- DSH 的全局 session catalog 在已有历史 profile 中可能显示历史 DealPilot session；这是当前确认暂缓的宿主限制。新安装或干净 profile 下，DealPilot 业务 UI 只在 `/dealpilot` 挂载。
+- 本项目是本地优先单用户工作台，不包含云端账号、团队协作、多设备同步或自动外发消息。
+
+## 目录结构
+
+```text
+dealpilot-dsh/
+├── plugin/
+│   ├── lib/                    # Agent tools 和 HTTP API
+│   ├── agent-preset/           # dealpilot-sales preset
+│   └── client/                 # /dealpilot 页面 bundle
+├── extension/                  # WhatsApp 扩展（后续能力）
+├── workspace-template/         # OKF 示例 Workspace
+├── docs/                       # PRD、数据契约和实现规范
+└── tests/                      # Node + Playwright 验收测试
 ```
-
-或在 web profile 的 `package.json` 中添加：
-
-```json
-"dependencies": { "dealpilot-dsh": "file:../dealpilot-link" },
-"dsh": { "profile": { "bundles": [..., "dealpilot-dsh"] } }
-```
-
-### 3. 启动
-
-```powershell
-dsh web
-```
-
-- 对话：直接在标准 Agent 中用 `dealpilot_*` 工具
-- 默认对话：`http://127.0.0.1:3080/`（不注入 DealPilot UI）
-- DealPilot 对话工作台：`http://127.0.0.1:3080/dealpilot`
-
-## 六个核心工具
-
-| 工具 | 功能 |
-|------|------|
-| `dealpilot_snapshot` | 确定性快照（Today/Customers/Deals/Funnel/Activity） |
-| `dealpilot_write` | 通用写入（创建/更新/归档 Customer/Deal/Action） |
-| `dealpilot_action_transition` | Action 状态转换（complete/cancel/block/reopen/schedule） |
-| `dealpilot_import` | 批量导入客户资料（CSV/Markdown/Text） |
-| `dealpilot_search` | 搜索客户和交易 |
-| `dealpilot_whatsapp` | WhatsApp 集成（拉取消息、分析、生成草稿） |
-
-## 开发状态
-
-- [x] S1: okf-utils.ts
-- [x] S2: snapshot.ts
-- [x] S3: write-tool.ts
-- [x] S4: action-tool.ts
-- [x] S5: import-tool.ts
-- [x] S6: search-tool.ts
-- [x] S7: whatsapp-tool.ts
-- [x] S8: `/dealpilot` 原生 DSH 对话工作台
-- [ ] S9: Chrome 扩展
-- [x] S10: A2A 与真实 Web 端到端测试
-- [x] S11: workspace 自动初始化与 bootstrap API
-- [x] S12: 路由级业务导航和工具结果视图
-
-## 产品化方案
-
-DealPilot 的产品化路线、workspace 自动初始化、Harness 对话复用和非侵入性约束见：
-
-[产品化方案 V0.1](docs/DealPilot_Productization_Plan_V0.1.md)

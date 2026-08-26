@@ -1,19 +1,35 @@
 // This client is injected globally by DSH. Every product behavior is gated by
 // the route so the default conversation at `/` remains untouched.
+//
+// These are real Cordis services, rather than an optional lookup. DSH only
+// exposes a service to a client plugin when it is declared here; keeping the
+// declaration explicit also makes a broken native session binding fail early.
+export const inject = [
+  'slots',
+  'sessions',
+  'workspaces',
+  'connection',
+] as const;
+
 export function apply(ctx: any) {
   if (typeof window === 'undefined' || window.location.pathname !== '/dealpilot') return;
+  // Install before DOMContentLoaded so the host runtime's persisted selection
+  // reads through the DealPilot key when the client has already been created.
+  installDealPilotSessionSelectionIsolation();
   (window as any).__dealpilotRuntime = ctx;
   const start = () => mountDealPilot(ctx);
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
   else start();
 }
 
-const VIEW_TITLES: Record<string, string> = {
+var VIEW_TITLES: Record<string, string> = {
   today: '今日工作', customers: '客户', deals: '交易', actions: '跟进任务',
-  funnel: '销售漏斗', activity: '活动时间线',
+  funnel: '销售漏斗', activity: '活动时间线', weekly: '周复盘', risk: '高风险交易',
+  stalled: '停滞交易', 'deal-lifecycle': '交易生命周期', 'action-lifecycle': '行动生命周期',
+  import: '导入中心', settings: '工作区设置',
 };
 
-const EMPTY_PROMPTS = [
+var EMPTY_PROMPTS = [
   ['导入客户资料', '请检查当前工作区 sources/inbox 中的客户资料，先告诉我可导入的内容和重复项，不要直接写入。'],
   ['创建第一笔交易', '我想创建第一笔交易。请先询问客户、产品、阶段和下一步行动，不要直接写入。'],
   ['规划今日跟进', '请根据当前销售工作区规划今天的跟进顺序，并区分事实、风险和建议。'],
@@ -21,6 +37,7 @@ const EMPTY_PROMPTS = [
 
 function mountDealPilot(runtime: any) {
   if (document.querySelector('[data-dealpilot-route]')) return;
+  registerDealPilotToolViews(runtime);
   document.documentElement.classList.add('dealpilot-route');
   hideNativeWorkspaceControls();
 
@@ -33,6 +50,13 @@ function mountDealPilot(runtime: any) {
     <button class="dealpilot-new" data-new-session type="button"><span aria-hidden="true">＋</span> 新建对话</button>
     <div class="dealpilot-section-label">最近对话</div>
     <div class="dealpilot-sessions" data-sessions><span class="dealpilot-session-dot"></span>完成工作区选择后显示</div>
+    <div class="dealpilot-section-label">销售周期</div>
+    <nav class="dealpilot-nav" aria-label="销售工作台导航">${[
+      ['today', '今日工作'], ['weekly', '周复盘'], ['customers', '客户'], ['deals', '交易'],
+      ['actions', '跟进任务'], ['risk', '高风险交易'], ['stalled', '停滞交易'],
+      ['deal-lifecycle', '交易生命周期'], ['action-lifecycle', '行动生命周期'],
+      ['import', '导入中心'], ['settings', '工作区设置'],
+    ].map(([view, label]) => `<button data-sidebar-view="${view}" type="button">${label}</button>`).join('')}</nav>
     <button class="dealpilot-change" data-change-workspace type="button">切换工作区</button>`;
   attachDealPilotSidebar(panel, true);
 
@@ -94,6 +118,7 @@ function mountDealPilot(runtime: any) {
   let snapshot: any;
   let activeView = 'today';
   let selectedItem: any;
+  let projectedSessionId = '';
   let searchQuery = '';
   let filterValue = 'all';
   let sortValue = 'priority';
@@ -109,7 +134,7 @@ function mountDealPilot(runtime: any) {
     panel.querySelector<HTMLElement>('[data-workspace-name]')!.textContent = name;
     contextPanel.querySelector<HTMLElement>('[data-context-workspace]')!.textContent = name;
   };
-  const actionRows = () => (snapshot?.deals || []).flatMap((deal: any) => (deal.actions || []).map((action: any) => ({ ...action, deal_title: deal.title, customer_name: deal.customer_name })));
+  const actionRows = () => (snapshot?.deals || []).flatMap((deal: any) => (deal.actions || []).map((action: any) => ({ ...action, status: action.status === 'done' ? 'completed' : action.status, deal_title: deal.title, customer_name: deal.customer_name })));
   const sourceForView = (view: string): any[] => {
     if (!snapshot) return [];
     if (view === 'customers') return snapshot.customers || [];
@@ -117,21 +142,33 @@ function mountDealPilot(runtime: any) {
     if (view === 'actions') return actionRows();
     if (view === 'today') return snapshot.today || [];
     if (view === 'funnel') return snapshot.funnel || [];
+    if (view === 'weekly') return snapshot.operations?.weekly_review?.next_week_actions || [];
+    if (view === 'risk') return snapshot.operations?.risk_deals || [];
+    if (view === 'stalled') return snapshot.operations?.stalled_deals || [];
+    if (view === 'deal-lifecycle') return snapshot.operations?.deal_lifecycle?.stages || [];
+    if (view === 'action-lifecycle') return snapshot.operations?.action_lifecycle?.statuses || [];
     return snapshot.activity || [];
   };
-  const itemTitle = (item: any, view: string) => item.title || item.event_type || item.stage || (view === 'activity' ? '业务事件' : '未命名');
+  const itemTitle = (item: any, view: string) => item.title || item.event_type || item.stage || item.status || (view === 'activity' ? '业务事件' : '未命名');
   const itemMeta = (item: any, view: string) => {
     if (view === 'customers') return [item.relationship_stage, item.market, item.priority].filter(Boolean).join(' · ');
     if (view === 'deals') return [item.customer_name, item.funnel_stage, item.risk_level].filter(Boolean).join(' · ');
     if (view === 'actions') return [item.customer_name, item.deal_title, item.status, formatDate(item.due_at)].filter(Boolean).join(' · ');
     if (view === 'today') return [item.customer_name, item.deal_title, bucketLabel(item.bucket), formatDate(item.due_at)].filter(Boolean).join(' · ');
     if (view === 'funnel') return `${item.count ?? 0} 笔交易`;
+    if (view === 'weekly') return [item.customer_name, item.deal_title, item.priority, formatDate(item.due_at)].filter(Boolean).join(' · ');
+    if (view === 'risk' || view === 'stalled') return [item.customer_name, item.funnel_stage, item.risk_level, item.stalled_days ? `停滞 ${item.stalled_days} 天` : ''].filter(Boolean).join(' · ');
+    if (view === 'deal-lifecycle') return `${item.count ?? 0} 笔交易`;
+    if (view === 'action-lifecycle') return `${item.count ?? 0} 个行动`;
     return [formatDate(item.occurred_at, true), item.channel, item.customer_ref || item.deal_ref].filter(Boolean).join(' · ');
   };
   const itemTone = (item: any, view: string) => {
     if (view === 'today') return item.bucket || 'today';
     if (view === 'deals') return ['high', 'critical'].includes(item.risk_level) ? 'risk' : 'neutral';
     if (view === 'actions') return item.status === 'blocked' ? 'risk' : item.status === 'completed' ? 'done' : 'today';
+    if (view === 'risk') return 'risk';
+    if (view === 'stalled') return 'overdue';
+    if (view === 'deal-lifecycle' || view === 'action-lifecycle') return 'neutral';
     return 'neutral';
   };
   const matchesFilter = (item: any, view: string) => {
@@ -140,6 +177,9 @@ function mountDealPilot(runtime: any) {
     if (view === 'deals') return filterValue === 'risk' ? ['high', 'critical'].includes(item.risk_level) : filterValue === 'active' ? item.status === 'active' : item.funnel_stage === filterValue;
     if (view === 'actions') return filterValue === 'overdue' ? item.status !== 'completed' && item.due_at && Date.parse(item.due_at) < Date.now() : filterValue === 'open' ? !['completed', 'cancelled'].includes(item.status) : item.status === filterValue;
     if (view === 'today') return item.bucket === filterValue;
+    if (view === 'weekly') return filterValue === 'all' || item.bucket === filterValue;
+    if (view === 'risk') return filterValue === 'all' || item.risk_level === filterValue;
+    if (view === 'stalled') return filterValue === 'all' || Number(item.stalled_days || 0) >= Number(filterValue);
     return true;
   };
   const priorityRank = (item: any) => ({ critical: 0, high: 1, P1: 1, P2: 2, medium: 2, P3: 3, low: 4 } as Record<string, number>)[item.priority || item.risk_level] ?? 5;
@@ -160,12 +200,16 @@ function mountDealPilot(runtime: any) {
     if (view === 'deals') return [['all', '全部交易'], ['active', '活跃交易'], ['risk', '高风险'], ...((snapshot?.funnel || []).map((x: any) => [x.stage, x.stage]))];
     if (view === 'actions') return [['all', '全部任务'], ['open', '未完成'], ['overdue', '已逾期'], ['planned', '待安排'], ['in_progress', '进行中'], ['completed', '已完成'], ['blocked', '已阻塞']];
     if (view === 'today') return [['all', '全部事项'], ['overdue', '逾期'], ['today', '今天'], ['risk', '风险'], ['confirmation', '待确认']];
+    if (view === 'weekly') return [['all', '下周重点'], ['overdue', '逾期'], ['risk', '风险'], ['today', '今天']];
+    if (view === 'risk') return [['all', '全部高风险'], ['high', '高风险'], ['critical', '关键风险']];
+    if (view === 'stalled') return [['all', '全部停滞'], ['14', '超过 14 天'], ['30', '超过 30 天']];
     return [['all', '全部']];
   };
   const promptForItem = (item: any, view: string) => {
     const title = itemTitle(item, view);
     if (view === 'customers') return `请分析客户“${title}”的当前状态，并给出下一步销售建议。引用当前销售工作区的事实，不要猜测未知信息。`;
     if (view === 'deals') return `请分析交易“${title}”（客户：${item.customer_name || '未知'}），重点说明当前风险、漏斗阶段和下一步行动。`;
+    if (view === 'risk' || view === 'stalled') return `请分析交易“${title}”（客户：${item.customer_name || '未知'}），说明风险或停滞原因，并给出下一步行动建议。`;
     if (view === 'actions' || view === 'today') return `请处理跟进任务“${title}”（${item.customer_name || ''} / ${item.deal_title || ''}）。先确认事实，再告诉我是否需要完成、延期或阻塞。`;
     return `请解释这条业务记录，并说明它对当前销售工作的影响：${title}。`;
   };
@@ -237,14 +281,71 @@ function mountDealPilot(runtime: any) {
     if (view === 'customers') fields.push(['关系阶段', item.relationship_stage], ['市场', item.market], ['ICP', item.icp_fit], ['优先级', item.priority], ['状态', item.status]);
     if (view === 'deals') fields.push(['客户', item.customer_name], ['漏斗阶段', item.funnel_stage], ['风险', item.risk_level], ['优先级', item.priority], ['状态', item.status]);
     if (view === 'actions' || view === 'today') fields.push(['客户', item.customer_name], ['交易', item.deal_title], ['状态', item.status || bucketLabel(item.bucket)], ['到期', formatDate(item.due_at)], ['优先级', item.priority]);
+    if (view === 'risk' || view === 'stalled') fields.push(['客户', item.customer_name], ['交易', item.title], ['阶段', item.funnel_stage], ['风险', item.risk_level], ['停滞天数', item.stalled_days]);
     if (view === 'activity') fields.push(['时间', formatDate(item.occurred_at, true)], ['渠道', item.channel], ['客户引用', item.customer_ref], ['交易引用', item.deal_ref]);
     if (view === 'funnel') fields.push(['阶段', item.stage], ['交易数量', item.count]);
+    if (view === 'deal-lifecycle') fields.push(['生命周期阶段', item.stage], ['交易数量', item.count]);
+    if (view === 'action-lifecycle') fields.push(['行动状态', item.status], ['行动数量', item.count]);
+    if (view === 'weekly') fields.push(['客户', item.customer_name], ['交易', item.deal_title], ['到期', formatDate(item.due_at)], ['优先级', item.priority]);
     detail.innerHTML = `
       <div class="dealpilot-detail-head"><span class="dealpilot-status-pill tone-${escapeHtml(itemTone(item, view))}">${escapeHtml(statusLabel(item, view))}</span><h3>${escapeHtml(itemTitle(item, view))}</h3><p>${escapeHtml(item.risk_summary || item.reason || itemMeta(item, view) || '当前工作区中的业务记录')}</p></div>
       <dl>${fields.filter(([, value]) => value !== undefined && value !== '').map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value || '未知')}</dd></div>`).join('')}</dl>
       <div class="dealpilot-detail-actions"><button data-ask-agent type="button">在对话中分析</button>${view === 'actions' || view === 'today' ? '<button data-action-update type="button">处理这项跟进</button>' : ''}</div>`;
     detail.querySelector('[data-ask-agent]')?.addEventListener('click', () => sendToConversation(promptForItem(item, view)));
     detail.querySelector('[data-action-update]')?.addEventListener('click', () => sendToConversation(promptForItem(item, view)));
+  };
+
+  const renderWeeklySummary = () => {
+    const review = snapshot?.operations?.weekly_review;
+    if (!review) return '';
+    return `<section class="dealpilot-review-summary" aria-label="周复盘摘要">
+      <div><strong>${review.new_customers?.length || 0}</strong><span>本周新增客户</span></div>
+      <div><strong>${review.new_deals?.length || 0}</strong><span>本周新增交易</span></div>
+      <div><strong>${review.stage_changes?.length || 0}</strong><span>阶段变化</span></div>
+      <div><strong>${review.stalled_deals?.length || 0}</strong><span>停滞交易</span></div>
+    </section>
+    <p class="dealpilot-review-period">${escapeHtml(review.period_start)} 至 ${escapeHtml(review.period_end)} · 下周优先处理 ${review.next_week_actions?.length || 0} 项</p>`;
+  };
+
+  const renderImportView = () => {
+    const content = workbench.querySelector<HTMLElement>('[data-board-content]')!;
+    content.innerHTML = `<section class="dealpilot-import-view">
+      <div class="dealpilot-form-head"><span class="dealpilot-eyebrow">Import Center</span><h3>导入客户资料</h3><p>先预览记录和重复项，再回到对话确认写入。预览不会修改工作区。</p></div>
+      <div class="dealpilot-import-form"><label>格式<select data-import-format><option value="csv">CSV</option><option value="markdown">Markdown 表格</option><option value="text">纯文本列表</option></select></label><label>来源标签<input data-import-label placeholder="例如：2026 上海展会"></label></div>
+      <textarea data-import-data rows="12" placeholder="粘贴客户资料，例如：\nAcme Corp\nBeta Ltd"></textarea>
+      <div class="dealpilot-form-actions"><button data-import-preview type="button">生成导入预览</button><button data-import-to-chat type="button">在对话中确认导入</button></div>
+      <div data-import-result class="dealpilot-import-result">等待预览</div>
+    </section>`;
+    const result = content.querySelector<HTMLElement>('[data-import-result]')!;
+    content.querySelector('[data-import-preview]')?.addEventListener('click', async () => {
+      const data = content.querySelector<HTMLTextAreaElement>('[data-import-data]')!.value;
+      const format = content.querySelector<HTMLSelectElement>('[data-import-format]')!.value;
+      if (!data.trim()) { result.textContent = '请先粘贴需要导入的资料'; return; }
+      result.textContent = '正在解析和检查重复项...';
+      try {
+        const preview = await api('/api/dealpilot/import/preview', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceId: selectedId, data, format, autoDedup: true }) });
+        result.innerHTML = `<strong>共 ${preview.total} 条记录</strong><span>预计新增 ${Math.max(0, preview.total - (preview.duplicates || []).length)} 条，重复 ${preview.duplicates?.length || 0} 条</span>${preview.duplicates?.length ? `<ul>${preview.duplicates.map((item: any) => `<li>${escapeHtml(item.title)}：已存在</li>`).join('')}</ul>` : ''}${preview.warnings?.length ? `<p>${preview.warnings.map((item: string) => escapeHtml(item)).join('；')}</p>` : ''}`;
+      } catch (err: any) { result.textContent = err.message; }
+    });
+    content.querySelector('[data-import-to-chat]')?.addEventListener('click', () => {
+      const data = content.querySelector<HTMLTextAreaElement>('[data-import-data]')!.value;
+      const label = content.querySelector<HTMLInputElement>('[data-import-label]')!.value;
+      if (data.trim()) sendToConversation(`请预览并导入以下客户资料${label ? `（来源：${label}）` : ''}。先展示重复项和写入数量，得到我明确确认后再调用 dealpilot_import：\n\n${data}`);
+    });
+  };
+
+  const renderSettingsView = () => {
+    const content = workbench.querySelector<HTMLElement>('[data-board-content]')!;
+    content.innerHTML = `<section class="dealpilot-settings-view"><div class="dealpilot-form-head"><span class="dealpilot-eyebrow">Workspace Settings</span><h3>工作区设置</h3><p>当前 DealPilot 会话只绑定一个工作区。切换工作区会创建新的对话上下文。</p></div><dl class="dealpilot-settings-list"><div><dt>当前工作区</dt><dd>${escapeHtml(select.value ? (select.selectedOptions[0]?.textContent || select.value) : '未选择')}</dd></div><div><dt>Agent preset</dt><dd>DealPilot 销售助理</dd></div><div><dt>数据位置</dt><dd>由 DSH Workspace Registry 管理</dd></div></dl><div class="dealpilot-form-actions"><button data-settings-change type="button">切换工作区</button><button data-settings-export type="button">导出工作区快照</button><button data-settings-archive type="button">归档工作区</button></div></section>`;
+    content.querySelector('[data-settings-change]')?.addEventListener('click', () => panel.querySelector<HTMLElement>('[data-change-workspace]')?.click());
+    content.querySelector('[data-settings-export]')?.addEventListener('click', () => { window.location.href = `/api/dealpilot/export?workspaceId=${encodeURIComponent(selectedId)}`; });
+    content.querySelector('[data-settings-archive]')?.addEventListener('click', async () => {
+      if (!window.confirm('归档后该工作区不会被删除，但不能再创建新的 DealPilot 对话。确定继续吗？')) return;
+      try {
+        await api('/api/dealpilot/workspaces/archive', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceId: selectedId }) });
+        window.location.reload();
+      } catch (err: any) { window.alert(err.message); }
+    });
   };
 
   const renderBoard = (view: string) => {
@@ -254,8 +355,11 @@ function mountDealPilot(runtime: any) {
     workbench.querySelectorAll<HTMLButtonElement>('[data-view]').forEach((button) => button.classList.toggle('active', button.dataset.view === view));
     const content = workbench.querySelector<HTMLElement>('[data-board-content]')!;
     if (!snapshot) { content.innerHTML = '<div class="dealpilot-loading">正在读取业务数据...</div>'; return; }
+    if (view === 'import') { renderImportView(); return; }
+    if (view === 'settings') { renderSettingsView(); return; }
     const options = filterOptions(view).map(([value, label]) => `<option value="${escapeHtml(value)}"${value === filterValue ? ' selected' : ''}>${escapeHtml(label)}</option>`).join('');
     content.innerHTML = `
+      ${view === 'weekly' ? renderWeeklySummary() : ''}
       <div class="dealpilot-board-toolbar">
         <label class="dealpilot-search"><span aria-hidden="true">⌕</span><input data-board-search type="search" aria-label="搜索当前视图" placeholder="搜索${escapeHtml(VIEW_TITLES[view])}" value="${escapeHtml(searchQuery)}"></label>
         <select data-board-filter aria-label="筛选当前视图">${options}</select>
@@ -296,19 +400,79 @@ function mountDealPilot(runtime: any) {
     else contextPanel.hidden = false;
   }
 
-  const getSessions = () => { try { return runtime?.get?.('sessions'); } catch { return undefined; } };
+  const getSessions = () => runtime.sessions || runtime.get('sessions');
+  const getWorkspaces = () => runtime.workspaces || runtime.get('workspaces');
+  // Keep the host session catalog intact. The selection storage bridge below
+  // scopes only the active-session key, while restoreSession() explicitly opens
+  // the saved DealPilot session after the selected Workspace is known.
+  const getConnection = () => runtime.connection || runtime.get('connection');
+  const refreshSessionHistory = async () => {
+    if (!selectedId) return;
+    const sessionList = panel.querySelector<HTMLElement>('[data-sessions]')!;
+    try {
+      const data = await api(`/api/dealpilot/sessions?workspaceId=${encodeURIComponent(selectedId)}`);
+      const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+      sessionList.innerHTML = sessions.length ? sessions.slice(0, 8).map((item: any, index: number) => `<button class="dealpilot-session-item${index === 0 ? ' active' : ''}" data-session-id="${escapeHtml(item.sessionId)}" type="button"><span class="dealpilot-session-dot active"></span><span>${escapeHtml(`对话 ${new Date(item.createdAt).toLocaleDateString('zh-CN')}`)}</span></button>`).join('') : '<span class="dealpilot-session-dot"></span>暂无历史对话';
+      sessionList.querySelectorAll<HTMLButtonElement>('[data-session-id]').forEach((button) => button.addEventListener('click', async () => {
+        const id = button.dataset.sessionId || '';
+        if (!id) return;
+        const session = await api(`/api/dealpilot/session/${encodeURIComponent(id)}`);
+        if (session.workspaceId !== selectedId || session.agentPreset !== 'dealpilot-sales') return;
+        if (getSessions()?.open) getSessions().open(id);
+        sessionStorage.setItem('dealpilot.sessionId', id);
+        sessionList.querySelectorAll('[data-session-id]').forEach((item) => item.classList.toggle('active', item === button));
+      }));
+    } catch { sessionList.innerHTML = '<span class="dealpilot-session-dot"></span>历史对话暂不可用'; }
+  };
   const createNativeSession = async (workspaceId: string) => {
     const sessions = getSessions();
-    const create = sessions?.manager?.api?.sessions?.create;
-    if (typeof create !== 'function') return '';
-    const response = await create({ workspaceId, agentPreset: 'dealpilot-sales' });
-    const result = response?.result;
-    if (!result?.ok) throw new Error(result?.error?.message || '无法创建 DealPilot 对话');
-    const id = result.value?.sessionId || '';
-    if (id && sessions.manager?.refresh) await sessions.manager.refresh();
-    if (id && sessions.manager?.select) sessions.manager.select(id);
+    if (!sessions) throw new Error('DSH sessions service is unavailable');
+    // Prefer DSH's official workspace-scoped create path. Compatibility
+    // workspaces absent from the host registry use the server-side cwd resolver.
+    let id = '';
+    try {
+      const createdResult = await sessions.create?.({ workspaceId });
+      id = typeof createdResult === 'string'
+        ? createdResult
+        : createdResult?.ok ? String(createdResult.value?.sessionId || '') : '';
+    } catch { /* compatibility workspace: use the server-side resolver below */ }
+    if (!id) {
+      const created = await api('/api/dealpilot/native-session', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspaceId }),
+      });
+      id = String(created.sessionId || '');
+    }
+    if (!id) throw new Error('DSH 未返回会话 id');
+    const selectPreset = getConnection()?.api?.agentPresets?.select;
+    if (typeof selectPreset !== 'function') throw new Error('DSH Agent preset 服务不可用');
+    const presetResponse = await selectPreset.call(getConnection().api.agentPresets, {
+      sessionId: id,
+      agentPreset: 'dealpilot-sales',
+    });
+    if (!presetResponse?.result?.ok || presetResponse.result.value?.agentPreset !== 'dealpilot-sales') {
+      throw new Error(presetResponse?.result?.error?.message || '无法绑定 DealPilot Agent');
+    }
+    if (sessions.noteAgentPreset) sessions.noteAgentPreset(id, 'dealpilot-sales');
+    await sessions.refresh?.();
+    if (sessions.open) sessions.open(id);
+    projectedSessionId = id;
+    projectDealPilotWorkspace(workspaceId, id);
     return id;
   };
+  const projectDealPilotWorkspace = (workspaceId: string, sessionId: string) => {
+    const store = getWorkspaces()?.list;
+    const current = store?.getSnapshot?.();
+    if (!store?.set || !current || !Array.isArray(current.items)) return;
+    const existing = current.items.find((item: any) => item.workspaceId === workspaceId);
+    const title = select.selectedOptions[0]?.textContent?.replace(/（已归档）$/, '') || workspaceId;
+    if (existing?.sessionIds?.includes(sessionId) && existing.title === title && current.items.length === 1) return;
+    const item = { ...(existing || {}), workspaceId, title, path: existing?.path || '', sessionIds: [...new Set([...(existing?.sessionIds || []), sessionId])] };
+    store.set({ ...current, items: [item, ...current.items.filter((entry: any) => entry.workspaceId !== workspaceId)] });
+  };
+  getSessions()?.list?.subscribe?.(() => {
+    if (projectedSessionId && selectedId) projectDealPilotWorkspace(selectedId, projectedSessionId);
+  });
   const enterReadyState = async (session: any, fallbackName: string) => {
     shade.hidden = true;
     cancelButton.hidden = true;
@@ -317,12 +481,12 @@ function mountDealPilot(runtime: any) {
     document.body.classList.add('dealpilot-ready');
     contextPanel.hidden = false;
     contextLauncher.hidden = true;
+    await refreshSessionHistory();
     await refreshSnapshot();
   };
   const bindSession = async (workspaceId: string) => {
     let dshSessionId = '';
-    try { dshSessionId = await createNativeSession(workspaceId); }
-    catch (err) { console.warn('[dealpilot] native session binding unavailable', err); }
+    dshSessionId = await createNativeSession(workspaceId);
     const session = await api('/api/dealpilot/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceId, dshSessionId: dshSessionId || undefined }) });
     sessionStorage.setItem('dealpilot.sessionId', session.sessionId);
     sessionStorage.setItem('dealpilot.workspaceId', workspaceId);
@@ -335,7 +499,17 @@ function mountDealPilot(runtime: any) {
       const session = await api(`/api/dealpilot/session/${encodeURIComponent(savedId)}`);
       if (session.workspaceId !== workspaceId || session.agentPreset !== 'dealpilot-sales') return false;
       const sessions = getSessions();
-      if (sessions?.manager?.select) sessions.manager.select(savedId);
+      // A fresh route mount can race the host catalog hydration. Refresh once
+      // before deciding that the persisted native session is unavailable.
+      await sessions?.refresh?.();
+      const nativeSummary = sessions?.list?.getSnapshot?.().byId?.[savedId];
+      // DSH versions before the preset projection do not include agentPreset in
+      // native summaries. The server-side DealPilot session binding above is
+      // authoritative; only require that the native session is listed.
+      if (!nativeSummary) return false;
+      if (sessions?.open) sessions.open(savedId);
+      projectedSessionId = savedId;
+      projectDealPilotWorkspace(workspaceId, savedId);
       await enterReadyState(session, workspaceId);
       return true;
     } catch { return false; }
@@ -357,7 +531,7 @@ function mountDealPilot(runtime: any) {
   const load = async () => {
     try {
       const data = await api('/api/dealpilot/workspaces');
-      select.innerHTML = '<option value="">选择工作区</option>' + (data.workspaces || []).map((w: any) => `<option value="${escapeHtml(w.id)}">${escapeHtml(w.name)}</option>`).join('');
+      select.innerHTML = '<option value="">选择工作区</option>' + (data.workspaces || []).map((w: any) => `<option value="${escapeHtml(w.id)}"${w.status === 'archived' ? ' disabled' : ''}>${escapeHtml(w.name)}${w.status === 'archived' ? '（已归档）' : ''}</option>`).join('');
       const saved = sessionStorage.getItem('dealpilot.workspaceId');
       if (saved && (data.workspaces || []).some((w: any) => w.id === saved)) { select.value = saved; await inspect(saved); }
       else setStatus('选择一个已有工作区，或选择空工作区后初始化');
@@ -367,7 +541,13 @@ function mountDealPilot(runtime: any) {
   select.addEventListener('change', () => inspect(select.value));
   initializeButton.addEventListener('click', async () => {
     initializeButton.disabled = true; setStatus('正在初始化 DealPilot...');
-    try { await api('/api/dealpilot/workspaces/initialize', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceId: selectedId }) }); await bindSession(selectedId); }
+    try {
+      const initialized = await api('/api/dealpilot/workspaces/initialize', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceId: selectedId }) });
+      // A newly adopted directory receives a canonical DSH workspace id.
+      // Continue with that id so native session.create can attach to it.
+      selectedId = String(initialized.workspaceId || selectedId);
+      await bindSession(selectedId);
+    }
     catch (err: any) { setStatus(err.message, true); }
     finally { initializeButton.disabled = false; }
   });
@@ -378,6 +558,10 @@ function mountDealPilot(runtime: any) {
     select.value = selectedId;
     setStatus('选择另一个工作区；取消会保留当前工作区');
   });
+  panel.querySelectorAll<HTMLButtonElement>('[data-sidebar-view]').forEach((button) => button.addEventListener('click', () => {
+    if (!selectedId || !document.body.classList.contains('dealpilot-ready')) return;
+    openWorkbench(button.dataset.sidebarView || 'today');
+  }));
   cancelButton.addEventListener('click', () => {
     inspectVersion += 1;
     selectedId = workspaceBeforePicker || selectedId;
@@ -394,7 +578,7 @@ function mountDealPilot(runtime: any) {
       const nativeId = await createNativeSession(selectedId);
       const created = await api('/api/dealpilot/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceId: selectedId, dshSessionId: nativeId }) });
       sessionStorage.setItem('dealpilot.sessionId', created.sessionId);
-      panel.querySelector<HTMLElement>('[data-sessions]')!.innerHTML = '<span class="dealpilot-session-dot active"></span>新对话';
+      await refreshSessionHistory();
     } catch (err) { console.warn('[dealpilot] new conversation failed', err); }
     finally { button.disabled = false; }
   });
@@ -416,6 +600,15 @@ function mountDealPilot(runtime: any) {
   workbench.querySelector('[data-board-refresh]')!.addEventListener('click', () => void refreshSnapshot());
   workbench.querySelector('[data-board-close]')!.addEventListener('click', closeWorkbench);
 
+  window.addEventListener('dealpilot:open-view', ((event: Event) => {
+    const detail = (event as CustomEvent).detail || {};
+    if (!document.body.classList.contains('dealpilot-ready')) return;
+    const view = typeof detail.view === 'string' ? detail.view : 'deals';
+    selectedItem = detail.item;
+    filterValue = 'all';
+    openWorkbench(view, true);
+  }) as EventListener);
+
   const nativeObserver = new MutationObserver(() => {
     hideNativeWorkspaceControls();
     attachDealPilotSidebar(panel);
@@ -423,6 +616,97 @@ function mountDealPilot(runtime: any) {
   });
   nativeObserver.observe(document.body, { childList: true, subtree: true });
   load();
+}
+
+/** Register DealPilot's structured result cards only on the /dealpilot route. */
+function registerDealPilotToolViews(runtime: any): void {
+  if (typeof window === 'undefined' || window.location.pathname !== '/dealpilot') return;
+  const slots = runtime?.get?.('slots');
+  const React = (window as any).__dealpilotReact;
+  if (!slots?.inject || !React?.createElement) return;
+
+  const keys = ['dealpilot_snapshot', 'dealpilot_search', 'dealpilot_write', 'dealpilot_action_transition', 'dealpilot_import'];
+  slots.inject('tool.call.toolview', () => function* registerViews() {
+    for (const key of keys) {
+      yield slots.register({ name: 'tool.call.toolview', key, locale: 'dealpilot' }, (props: any) =>
+        createDealPilotToolRow(React, props));
+    }
+  });
+}
+
+function createDealPilotToolRow(React: any, props: any): any {
+  const block = props?.block || {};
+  const meta = block?.meta?.product === 'dealpilot' ? block.meta : undefined;
+  const state = 'kind' in block ? (block.isError ? 'error' : 'ok') : 'running';
+  const content = Array.isArray(block?.content)
+    ? block.content.filter((item: any) => item?.type === 'text').map((item: any) => item.text).join('\n')
+    : '';
+  const title = meta?.title || props?.toolName || 'DealPilot';
+  const items = Array.isArray(meta?.items) ? meta.items : meta?.item ? [meta.item] : [];
+  const summary = meta?.summary && typeof meta.summary === 'object'
+    ? Object.entries(meta.summary).filter(([key]) => key !== 'filters').map(([key, value]) => `${key}: ${String(value)}`).join(' · ')
+    : '';
+  const open = (item?: any) => window.dispatchEvent(new CustomEvent('dealpilot:open-view', {
+    detail: { view: meta?.view === 'customer-card' ? 'customers' : meta?.view === 'action-list' ? 'actions' : 'deals', item },
+  }));
+  const children: any[] = [
+    React.createElement('div', { className: 'dealpilot-toolview-head', key: 'head' },
+      React.createElement('span', { className: 'dealpilot-toolview-state', 'data-state': state }, state === 'running' ? '处理中' : state === 'error' ? '失败' : '完成'),
+      React.createElement('strong', null, title),
+      meta?.count !== undefined ? React.createElement('span', { className: 'dealpilot-toolview-count' }, `${meta.count} 条`) : null),
+  ];
+  if (summary) children.push(React.createElement('p', { className: 'dealpilot-toolview-summary', key: 'summary' }, summary));
+  if (meta?.view === 'confirmation') {
+    children.push(React.createElement('p', { className: 'dealpilot-toolview-confirmation', key: 'confirmation' }, '需要用户确认后才会写入工作区。'));
+  } else if (items.length) {
+    children.push(React.createElement('div', { className: 'dealpilot-toolview-items', key: 'items' }, items.slice(0, 6).map((item: any, index: number) =>
+      React.createElement('button', { type: 'button', className: 'dealpilot-toolview-item', key: `${item.ref || item.title || index}`, onClick: () => open(item) },
+        React.createElement('strong', null, item.title || item.deal_title || item.status || '业务记录'),
+        React.createElement('small', null, [item.customer_name, item.funnel_stage, item.risk_level, item.status, item.due_at].filter(Boolean).join(' · '))))));
+  } else if (content) {
+    children.push(React.createElement('p', { className: 'dealpilot-toolview-fallback', key: 'fallback' }, content));
+  }
+  children.push(React.createElement('button', { type: 'button', className: 'dealpilot-toolview-open', key: 'open', onClick: () => open() }, '打开业务视图'));
+  return React.createElement('section', { className: 'dealpilot-toolview', 'data-dealpilot-view': meta?.view || 'generic', 'data-tool': props?.toolName || '' }, children);
+}
+
+/**
+ * DSH persists its current session under one browser key. DealPilot is a
+ * separate product surface, so writes made by its native conversation must
+ * not replace the default page's current session. The runtime has already
+ * restored its initial selection before this injected client runs; only the
+ * subsequent selection writes are redirected to the DealPilot key.
+ */
+function installDealPilotSessionSelectionIsolation(): void {
+  if (typeof window === 'undefined' || !window.localStorage || typeof Storage === 'undefined') return;
+  const marker = '__dealpilotSessionSelectionIsolation';
+  if ((window as any)[marker]) return;
+  const storage = window.localStorage;
+  const key = 'dsh.sessions.current';
+  const scopedKey = `${key}.dealpilot`;
+  const prototype = Storage.prototype;
+  const originalSetItem = prototype.setItem;
+  const originalGetItem = prototype.getItem;
+  const originalRemoveItem = prototype.removeItem;
+  prototype.getItem = function (name: string): string | null {
+    if (this === storage && name === key) return originalGetItem.call(this, scopedKey);
+    return originalGetItem.call(this, name);
+  };
+  prototype.setItem = function (name: string, value: string): void {
+    if (this === storage && name === key) return originalSetItem.call(this, scopedKey, value);
+    return originalSetItem.call(this, name, value);
+  };
+  prototype.removeItem = function (name: string): void {
+    if (this === storage && name === key) return originalRemoveItem.call(this, scopedKey);
+    return originalRemoveItem.call(this, name);
+  };
+  (window as any)[marker] = true;
+  window.addEventListener('pagehide', () => {
+    prototype.getItem = originalGetItem;
+    prototype.setItem = originalSetItem;
+    prototype.removeItem = originalRemoveItem;
+    delete (window as any)[marker];
+  }, { once: true });
 }
 
 function attachConversationProductUi(contextPanel: HTMLElement, launcher: HTMLElement, workbench: HTMLElement) {
@@ -447,12 +731,16 @@ function attachDealPilotSidebar(panel: HTMLElement, ensureExpanded = false) {
 }
 
 function hideNativeWorkspaceControls() {
-  const candidates = Array.from(document.querySelectorAll<HTMLElement>('button, [role="button"], [data-testid], [aria-label]'));
+  const candidates = Array.from(document.querySelectorAll<HTMLElement>('button, [role="button"], [data-testid]'));
   for (const element of candidates) {
     if (element.textContent?.trim().match(/^(Workspace|工作区|Workspaces|工作空间)$/i) || element.getAttribute('aria-label')?.match(/workspace|工作区/i)) {
       (element.closest('button, [role="button"], [data-testid]') || element).classList.add('dealpilot-native-hidden');
     }
   }
+  // DSH reuses the Composer textarea when a Workspace becomes available. It
+  // may retain the class from the earlier disabled Workspace-picker state.
+  document.querySelectorAll<HTMLElement>('textarea.dealpilot-native-hidden, [contenteditable="true"].dealpilot-native-hidden')
+    .forEach((element) => element.classList.remove('dealpilot-native-hidden'));
   if (!document.querySelector('style[data-dealpilot-native-style]')) {
     const style = document.createElement('style');
     style.dataset.dealpilotNativeStyle = 'true';
@@ -470,7 +758,7 @@ function renderFunnel(items: any[]): string {
 
 function boardSubtitle(view: string, snapshot: any): string {
   const count = view === 'customers' ? snapshot?.summary?.customers : view === 'deals' ? snapshot?.summary?.active_deals : view === 'today' ? snapshot?.summary?.today : undefined;
-  const copy: Record<string, string> = { today: '聚焦需要推进的销售事项', customers: '管理客户关系、市场和优先级', deals: '掌握阶段、风险和下一步行动', actions: '安排、推进和完成跟进', funnel: '查看活跃交易的阶段分布', activity: '追踪最近的业务变化' };
+  const copy: Record<string, string> = { today: '聚焦需要推进的销售事项', customers: '管理客户关系、市场和优先级', deals: '掌握阶段、风险和下一步行动', actions: '安排、推进和完成跟进', funnel: '查看活跃交易的阶段分布', activity: '追踪最近的业务变化', weekly: '回顾本周变化，安排下周重点', risk: '集中处理高风险交易', stalled: '识别长时间没有推进的交易', 'deal-lifecycle': '按漏斗阶段查看交易推进', 'action-lifecycle': '按状态查看跟进任务', import: '解析资料并在对话中确认导入', settings: '管理当前工作区和数据导出' };
   return `${copy[view] || '当前销售工作区'}${count !== undefined ? ` · ${count} 条` : ''}`;
 }
 
@@ -482,6 +770,8 @@ function statusLabel(item: any, view: string): string {
   if (view === 'today') return bucketLabel(item.bucket);
   if (view === 'deals') return ['high', 'critical'].includes(item.risk_level) ? '高风险' : item.funnel_stage || '交易';
   if (view === 'actions') return item.status === 'completed' ? '已完成' : item.status === 'blocked' ? '已阻塞' : '待跟进';
+  if (view === 'action-lifecycle') return item.status || '行动状态';
+  if (view === 'deal-lifecycle') return item.stage || '交易阶段';
   if (view === 'customers') return item.priority || item.relationship_stage || '客户';
   if (view === 'funnel') return '漏斗阶段';
   return item.channel || '业务活动';
@@ -498,11 +788,12 @@ function escapeHtml(value: any): string {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' } as any)[char]);
 }
 
-const productStyles = `
+var productStyles = `
+  .dealpilot-toolview{margin:8px 0;padding:10px 12px;border:1px solid #dfe5ea;border-radius:8px;background:#fbfcfd;color:#2f3942;font:12px/1.4 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.dealpilot-toolview-head{display:flex;align-items:center;gap:7px;min-height:22px}.dealpilot-toolview-head strong{font-size:12px}.dealpilot-toolview-state{font-size:9px;color:#6b7680;border:1px solid #dce2e7;border-radius:4px;padding:2px 4px}.dealpilot-toolview-state[data-state="ok"]{color:#1d7856;background:#eef8f2}.dealpilot-toolview-state[data-state="error"]{color:#ad3027;background:#fff0ee}.dealpilot-toolview-count{margin-left:auto;color:#7a858e;font-size:10px}.dealpilot-toolview-summary{margin:7px 0 0;color:#727d86;font-size:10px}.dealpilot-toolview-items{display:flex;flex-direction:column;gap:2px;margin-top:7px}.dealpilot-toolview-item{display:flex;align-items:center;gap:8px;border:0;border-radius:5px;background:#fff;text-align:left;padding:6px 7px;cursor:pointer;color:#303a43;font:11px inherit}.dealpilot-toolview-item:hover{background:#edf3f7}.dealpilot-toolview-item strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dealpilot-toolview-item small{margin-left:auto;color:#7c8790;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:55%}.dealpilot-toolview-open{margin-top:8px;height:27px;border:1px solid #ccd6de;border-radius:4px;background:#fff;color:#316c9e;font:10px inherit;cursor:pointer}.dealpilot-toolview-open:hover{border-color:#7ea6c4;background:#f2f7fa}.dealpilot-toolview-confirmation{margin:8px 0 0;color:#9b5b17;font-size:10px}.dealpilot-toolview-fallback{margin:8px 0 0;white-space:pre-wrap;color:#59656f;font-size:10px}
   .dealpilot-route-panel{position:relative;z-index:1;width:auto;height:100%;min-height:0;padding:12px 10px 10px;color:#20242a;font:13px/1.4 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;display:flex;flex-direction:column;gap:12px;overflow:auto;background:transparent;border:0;box-shadow:none;letter-spacing:0}
   .dealpilot-brand{display:flex;align-items:center;gap:9px;padding:2px}.dealpilot-mark{width:28px;height:28px;border-radius:6px;background:#1d2630;color:#fff;display:grid;place-items:center;font-weight:700}.dealpilot-brand strong{display:block;font-size:14px}.dealpilot-brand small{display:block;color:#818892;font-size:10px;margin-top:1px}
   .dealpilot-workspace-row{padding:8px 2px;border-top:1px solid #e7e9ec;border-bottom:1px solid #e7e9ec}.dealpilot-workspace-row span{display:block;color:#8a9098;font-size:10px}.dealpilot-workspace-row strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:3px;font-size:12px}
-  .dealpilot-new,.dealpilot-change{width:100%;height:34px;border:0;border-radius:5px;cursor:pointer;font:inherit}.dealpilot-new{padding:0 10px;text-align:left;background:#1d67d6;color:#fff;font-weight:600}.dealpilot-new:disabled{opacity:.5}.dealpilot-section-label{color:#8b929b;font-size:10px;text-transform:uppercase;margin-top:2px}.dealpilot-sessions{display:flex;align-items:center;gap:7px;color:#5d6671;font-size:12px;padding:6px 4px}.dealpilot-session-dot{width:6px;height:6px;border-radius:50%;background:#bec4ca}.dealpilot-session-dot.active{background:#16835b}.dealpilot-change{margin-top:auto;text-align:left;padding:0 8px;background:transparent;color:#6b737d;font-size:11px}.dealpilot-change:hover{background:#f0f2f4}
+  .dealpilot-new,.dealpilot-change{width:100%;height:34px;border:0;border-radius:5px;cursor:pointer;font:inherit}.dealpilot-new{padding:0 10px;text-align:left;background:#1d67d6;color:#fff;font-weight:600}.dealpilot-new:disabled{opacity:.5}.dealpilot-section-label{color:#8b929b;font-size:10px;text-transform:uppercase;margin-top:2px}.dealpilot-sessions{display:flex;flex-direction:column;gap:3px;color:#5d6671;font-size:12px;padding:4px}.dealpilot-session-item{display:flex;align-items:center;gap:7px;width:100%;min-height:26px;border:0;border-radius:4px;background:transparent;color:#5d6671;text-align:left;padding:4px;cursor:pointer;font:11px inherit}.dealpilot-session-item:hover,.dealpilot-session-item.active{background:#edf2f5;color:#25313b}.dealpilot-session-dot{width:6px;height:6px;flex:none;border-radius:50%;background:#bec4ca}.dealpilot-session-dot.active{background:#16835b}.dealpilot-change{margin-top:auto;text-align:left;padding:0 8px;background:transparent;color:#6b737d;font-size:11px}.dealpilot-change:hover{background:#f0f2f4}
   .dealpilot-conversation-host{position:relative!important;box-sizing:border-box!important;padding-right:340px!important;transition:padding-right .18s ease}.dealpilot-context{position:absolute;z-index:30;right:0;top:0;bottom:0;width:340px;background:#fbfcfd;border-left:1px solid #e1e5e9;color:#22272e;font:13px/1.45 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:0}.dealpilot-context[hidden],.dealpilot-context-launcher[hidden],.dealpilot-workbench[hidden]{display:none!important}
   .dealpilot-context-header{height:64px;padding:0 16px;border-bottom:1px solid #e4e7ea;display:flex;align-items:center;justify-content:space-between;background:#fff}.dealpilot-context-header strong{display:block;font-size:14px;margin-top:2px}.dealpilot-eyebrow{display:block;color:#868d96;font-size:10px;text-transform:uppercase}.dealpilot-icon-actions{display:flex;gap:5px}.dealpilot-icon-actions button{width:29px;height:29px;border:1px solid #dce1e6;border-radius:5px;background:#fff;color:#5d6671;font:17px/1 sans-serif;cursor:pointer}.dealpilot-icon-actions button:hover{border-color:#9ea7b1;color:#20262d}.dealpilot-context-scroll{height:calc(100% - 64px);overflow:auto;padding:0 16px 16px}.dealpilot-loading{padding:48px 16px;color:#7e858e;text-align:center}
   .dealpilot-summary{display:grid;grid-template-columns:repeat(4,1fr);border-bottom:1px solid #e5e8eb;margin:0 -16px}.dealpilot-summary button{height:76px;border:0;border-right:1px solid #e5e8eb;background:#fff;cursor:pointer;text-align:center}.dealpilot-summary button:last-child{border-right:0}.dealpilot-summary b{display:block;font-size:20px;line-height:1.1}.dealpilot-summary span{display:block;color:#777f88;font-size:10px;margin-top:6px}.dealpilot-summary .tone-overdue b{color:#b42318}.dealpilot-summary .tone-today b{color:#1769a3}.dealpilot-summary .tone-risk b{color:#b65b13}.dealpilot-summary .tone-confirmation b{color:#6750a4}.dealpilot-summary button:hover{background:#f6f8fa}
@@ -523,4 +814,6 @@ const productStyles = `
   @media(max-width:1050px){.dealpilot-conversation-host{padding-right:300px!important}.dealpilot-context{width:300px}.dealpilot-workbench-header{padding:0 16px}.dealpilot-workbench-content,.dealpilot-tabs{padding-left:16px;padding-right:16px}.dealpilot-board-layout{grid-template-columns:minmax(240px,.85fr) minmax(270px,1.15fr)}}
   @media(max-width:820px){.dealpilot-conversation-host{padding-right:0!important}.dealpilot-context{width:min(360px,100%);box-shadow:-8px 0 24px rgba(20,30,40,.12)}.dealpilot-board-layout{grid-template-columns:1fr}.dealpilot-board-list{border-right:0}.dealpilot-board-detail{border-top:1px solid #e5e8eb}.dealpilot-board-toolbar{grid-template-columns:1fr 130px}.dealpilot-board-toolbar select:last-child{display:none}}
   @media(max-width:560px){.dealpilot-workbench-header{height:70px}.dealpilot-workbench-header p{display:none}.dealpilot-tabs{padding:0 12px;gap:16px}.dealpilot-workbench-content{height:calc(100% - 114px);padding:12px}.dealpilot-board-toolbar{grid-template-columns:1fr}.dealpilot-board-toolbar select:last-child{display:block}.dealpilot-board-layout{border-left:0;border-right:0;border-radius:0}.dealpilot-onboarding-card{padding:22px}}
+  .dealpilot-nav{display:flex;flex-direction:column;gap:2px;overflow:auto;min-height:0}.dealpilot-nav button{border:0;background:transparent;color:#606a74;text-align:left;border-radius:4px;padding:6px 7px;font:11px inherit;cursor:pointer}.dealpilot-nav button:hover{background:#eef2f5;color:#1e2933}.dealpilot-nav button:focus-visible{outline:2px solid #4d86c3;outline-offset:1px}
+  .dealpilot-review-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px}.dealpilot-review-summary div{padding:14px;background:#fff;border:1px solid #e1e5e8;border-radius:6px}.dealpilot-review-summary strong{display:block;font-size:22px;color:#1f6dc8}.dealpilot-review-summary span{display:block;margin-top:5px;color:#737c85;font-size:10px}.dealpilot-review-period{margin:0 0 14px;color:#7b838c;font-size:11px}.dealpilot-form-head{margin-bottom:18px}.dealpilot-form-head h3{font-size:20px;margin:4px 0}.dealpilot-form-head p{color:#747d86;font-size:11px;margin:0;line-height:1.6}.dealpilot-import-form{display:grid;grid-template-columns:160px 1fr;gap:10px;margin-bottom:10px}.dealpilot-import-form label{display:flex;flex-direction:column;gap:5px;color:#6e7780;font-size:10px}.dealpilot-import-form input,.dealpilot-import-form select,.dealpilot-import-view textarea{border:1px solid #d9dee3;border-radius:5px;background:#fff;padding:8px;font:12px inherit;color:#2d343b}.dealpilot-import-view textarea{width:100%;resize:vertical;line-height:1.5}.dealpilot-form-actions{display:flex;gap:8px;margin-top:12px}.dealpilot-form-actions button{height:34px;border:1px solid #ccd4db;border-radius:5px;background:#fff;color:#2e3943;padding:0 12px;font:11px inherit;cursor:pointer}.dealpilot-form-actions button:first-child{background:#216bc1;border-color:#216bc1;color:#fff}.dealpilot-import-result{min-height:90px;margin-top:14px;padding:13px;border:1px solid #e1e5e8;border-radius:6px;background:#fff;color:#68727c;font-size:11px}.dealpilot-import-result strong,.dealpilot-import-result span{display:block;margin-bottom:6px}.dealpilot-import-result ul{margin:8px 0;padding-left:18px}.dealpilot-settings-list{margin:0;border-top:1px solid #e2e6e9;background:#fff}.dealpilot-settings-list div{display:grid;grid-template-columns:120px 1fr;padding:12px;border-bottom:1px solid #edf0f2}.dealpilot-settings-list dt{color:#87909a;font-size:10px}.dealpilot-settings-list dd{margin:0;color:#343d46;font-size:11px}
 `;

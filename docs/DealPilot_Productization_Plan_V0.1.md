@@ -1,10 +1,14 @@
 # DealPilot 产品化方案 V0.1
 
+> **落地边界**：当前主入口为 `/dealpilot`，默认 `/` 保持原生 DSH。Workspace、`dealpilot-sales` preset、业务导航和业务视图均为 `/dealpilot` 页面级能力；WhatsApp Chrome 扩展明确排除在本轮交付之外。
+
+> **当前实现状态（2026-08-26）**：除 WhatsApp Chrome 扩展实际闭环外，本文所列 Workspace、会话、业务工具、业务视图、导入、生命周期和确认流程均已实现并通过 TypeScript、Node 全量测试和浏览器交互验证。DSH 全局 session catalog 在历史 profile 中可能把 DealPilot 会话带回 `/`，该宿主限制按当前产品决策暂不处理。
+
 ## 1. 目标
 
 将 DealPilot 从“DSH 业务工具 + 独立看板”产品化为一个销售工作台：
 
-- 用户访问 `/dealpilot` 即可进入 DealPilot，不需要手动创建 workspace。
+- 用户访问 `/dealpilot` 后先选择一个 DSH Workspace；不需要手动创建目录或编辑路径配置。
 - 对话仍然使用 DeepSeek Harness 的原生会话、Agent、流式响应和工具调用能力。
 - DealPilot 通过自己的 App Shell、页面和插件扩展点提供销售业务 UI。
 - 客户、交易、行动和导入等操作都可以在同一条对话上下文中完成并回显。
@@ -48,23 +52,23 @@ DealPilot App Shell
 
 首屏默认显示 Today 视图和对话入口。用户可以在 DealPilot 内完成浏览、筛选、确认和追问；复杂的理解和执行仍然交给 Harness Agent。
 
-## 4. Workspace 自动初始化
+## 4. Workspace 选择与初始化
 
 ### 4.1 用户体验
 
 用户第一次打开 `/dealpilot` 时：
 
-1. 插件检查默认 workspace 是否存在。
-2. 不存在时自动创建默认 workspace 和 OKF 目录。
-3. 初始化基础 metadata、空索引和事件目录。
-4. 返回空快照和 onboarding 状态。
-5. 页面显示“开始导入客户”或“创建第一笔交易”的对话入口。
+1. 从 DSH Workspace Registry 加载当前用户可访问的 Workspace 列表。
+2. 用户选择 Workspace，服务端只通过 `workspaceId` 解析真实路径。
+3. `inspect` 判断该 Workspace 是 `new`、`reusable` 或 `invalid`，检查过程不写文件。
+4. 对 `new` Workspace，用户明确点击初始化后才创建 DealPilot 元数据、目录和索引；已有业务文件不会覆盖。
+5. 初始化或复用完成后创建绑定该 Workspace 的 DealPilot session，并显示对话入口。
 
-用户不需要复制模板、设置路径或编辑 profile 配置。
+用户不需要复制模板、设置绝对路径或编辑 profile 配置。
 
-### 4.2 默认位置
+### 4.2 存储边界
 
-默认 workspace 使用 DSH 管理的数据目录：
+Workspace 的真实路径由 DSH Registry 管理。仅在兼容 API 未提供 `workspaceId` 时，才使用 DealPilot 自有的默认存储根目录：
 
 ```text
 ~/.dsh/storages/dealpilot/workspaces/default/
@@ -74,8 +78,8 @@ DealPilot App Shell
 
 ```json
 {
-  "id": "default",
-  "name": "My Deal Workspace",
+  "id": "dealpilot/workspaces/default",
+  "name": "Sales workspace",
   "created_at": "2026-08-25T00:00:00.000Z",
   "setup_status": "ready",
   "timezone": "Asia/Shanghai"
@@ -86,11 +90,11 @@ DealPilot App Shell
 
 ### 4.3 Workspace 管理边界
 
-第一版只自动创建一个 `default` workspace，同时预留：
+一个 DealPilot 页面 session 同时只绑定一个 Workspace，同时支持：
 
 - workspace 列表
 - workspace 切换
-- workspace 命名和时区设置
+- workspace 命名和时区设置（由 DSH Registry 提供）
 - 导出和归档
 
 所有业务工具统一从 workspace manager 获取路径，不再由每个工具自行推断目录。
@@ -219,12 +223,12 @@ Planned → In Progress → Blocked → Completed / Cancelled
 
 ## 8. 分阶段实施计划
 
-### Phase 1：产品入口和自动初始化
+### Phase 1：产品入口和显式初始化
 
 - 新增 workspace manager
 - 新增 `/api/dealpilot/bootstrap`
-- `/dealpilot` 首次访问自动创建 default workspace
-- 空 workspace onboarding
+- `/dealpilot` 首次访问加载 DSH Workspace Registry
+- 空 workspace inspect 和显式初始化 onboarding
 - Today 首屏
 - 保持六个业务工具兼容
 
@@ -291,4 +295,4 @@ plugin/client/client.ts           仅注册 DealPilot 自己的 slots
 
 DealPilot 的产品化路线是“复用 Harness 对话能力 + 自己提供销售工作台”，而不是复制一个新的聊天应用，也不是改造 DSH 默认对话页。
 
-第一步应先落地 workspace 自动初始化和 `/dealpilot` App Shell；第二步再接入 Harness 对话 slot 和工具结果视图。这样可以在不影响默认对话页面的前提下，把 DealPilot 做成完整、可直接使用的产品。
+第一步已落地 Workspace Registry 选择、显式初始化和 `/dealpilot` App Shell；第二步已接入 Harness 原生对话、会话和工具结果视图。这样可以在不修改默认对话页面的前提下，把 DealPilot 做成完整、可直接使用的产品。

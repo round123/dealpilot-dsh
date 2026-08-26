@@ -17,7 +17,7 @@ type LegacyTool = {
   };
   presentCall?: (args: any) => any;
   presentResult?: (args: any, result: any) => any;
-  execute: (args: any) => Promise<any>;
+  execute: (args: any, exec?: any) => Promise<any>;
 };
 
 function normalizeSchema(schema: Record<string, any>): Record<string, any> {
@@ -74,7 +74,7 @@ export function createToolHarness(ctx: Record<string, any>, _toolCtx?: Record<st
           const sessionId = exec?.agent?.id;
           const context = getDealPilotSession(sessionId);
           if (!context) throw new Error('请先选择 DealPilot Workspace');
-          const result = await runWithWorkspace(context.sessionId, context.workspacePath, () => tool.execute(args));
+          const result = await runWithWorkspace(context.sessionId, context.workspacePath, () => tool.execute(args, exec));
           if (typeof result !== 'string') return result;
           try {
             return JSON.parse(result);

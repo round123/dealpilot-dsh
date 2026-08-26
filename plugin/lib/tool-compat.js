@@ -53,7 +53,7 @@ export function createToolHarness(ctx, _toolCtx) {
                     const context = getDealPilotSession(sessionId);
                     if (!context)
                         throw new Error('请先选择 DealPilot Workspace');
-                    const result = await runWithWorkspace(context.sessionId, context.workspacePath, () => tool.execute(args));
+                    const result = await runWithWorkspace(context.sessionId, context.workspacePath, () => tool.execute(args, exec));
                     if (typeof result !== 'string')
                         return result;
                     try {

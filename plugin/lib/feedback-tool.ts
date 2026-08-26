@@ -28,10 +28,14 @@ export function registerFeedbackTools(ctx: Record<string, any>, harness: any): v
   harness.registerTool(ctx, harness.defineTool({
     name: 'dealpilot_feedback_submit', description: '经用户确认后生成 GitHub New Issue 地址。',
     parameters: { type: 'object', properties: { feedback_id: { type: 'string' }, confirmation_token: { type: 'string' } }, required: ['feedback_id'] }, output: { schema: { type: 'object' } },
-    async execute(args: { feedback_id: string; confirmation_token?: string }) {
+    async execute(args: { feedback_id: string; confirmation_token?: string }, exec: any = {}) {
       const item = drafts.get(args.feedback_id); if (!item) throw new Error('Feedback 草稿不存在');
       const payload = { feedback_id: item.id, fingerprint: item.fingerprint };
-      if (!args.confirmation_token) return createConfirmation('dealpilot_feedback_submit', payload, '请确认后打开 GitHub Issue 草稿页面。', { title: item.title, body: item.body, fingerprint: item.fingerprint });
+      const policy = exec?.config?.externalFeedback || exec?.agent?.externalFeedback || process.env.DEALPILOT_EXTERNAL_FEEDBACK || 'ask';
+      const approval = exec?.approvalPolicy || exec?.approval_policy || exec?.agent?.approvalPolicy || exec?.agent?.approval_policy;
+      const autoAllowed = policy === 'auto' && approval === 'never';
+      if (!args.confirmation_token && !autoAllowed) return createConfirmation('dealpilot_feedback_submit', payload, '请确认后打开 GitHub Issue 草稿页面。', { title: item.title, body: item.body, fingerprint: item.fingerprint });
+      if (!args.confirmation_token && autoAllowed) { item.status = 'submitted'; return { ok: true, feedback_id: item.id, status: item.status, auto_approved: true, url: `https://github.com/round123/dealpilot-dsh/issues/new?title=${encodeURIComponent(item.title)}&body=${encodeURIComponent(item.body)}` }; }
       consumeConfirmation(args.confirmation_token, 'dealpilot_feedback_submit', payload); item.status = 'submitted';
       const url = `https://github.com/round123/dealpilot-dsh/issues/new?title=${encodeURIComponent(item.title)}&body=${encodeURIComponent(item.body)}`;
       return { ok: true, feedback_id: item.id, status: item.status, url };

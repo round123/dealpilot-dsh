@@ -1,6 +1,6 @@
 window.__ModuleLoader__.load({ id: 'dealpilot-dsh', factory: () => ({ apply }) });
-// The host injects this module on every web page. All DealPilot behavior is
-// deliberately gated by pathname so the default DSH conversation stays clean.
+// This client is injected globally by DSH. Every product behavior is gated by
+// the route so the default conversation at `/` remains untouched.
 function apply(ctx) {
     if (typeof window === 'undefined' || window.location.pathname !== '/dealpilot')
         return;
@@ -11,6 +11,15 @@ function apply(ctx) {
     else
         start();
 }
+const VIEW_TITLES = {
+    today: '今日工作', customers: '客户', deals: '交易', actions: '跟进任务',
+    funnel: '销售漏斗', activity: '活动时间线',
+};
+const EMPTY_PROMPTS = [
+    ['导入客户资料', '请检查当前工作区 sources/inbox 中的客户资料，先告诉我可导入的内容和重复项，不要直接写入。'],
+    ['创建第一笔交易', '我想创建第一笔交易。请先询问客户、产品、阶段和下一步行动，不要直接写入。'],
+    ['规划今日跟进', '请根据当前销售工作区规划今天的跟进顺序，并区分事实、风险和建议。'],
+];
 function mountDealPilot(runtime) {
     if (document.querySelector('[data-dealpilot-route]'))
         return;
@@ -21,43 +30,54 @@ function mountDealPilot(runtime) {
     panel.className = 'dealpilot-route-panel';
     panel.innerHTML = `
     <div class="dealpilot-brand"><span class="dealpilot-mark">D</span><div><strong>DealPilot</strong><small>销售工作台</small></div></div>
-    <div class="dealpilot-current"><span>当前工作区</span><strong data-workspace-name>未选择</strong></div>
-    <button class="dealpilot-new" data-new-session type="button">＋ 新建对话</button>
-    <div class="dealpilot-section-label">最近对话</div><div class="dealpilot-sessions" data-sessions>完成工作区选择后显示</div>
-    <nav class="dealpilot-nav" aria-label="业务视图">
-      <button data-view="today" type="button">今日工作</button>
-      <button data-view="customers" type="button">客户</button>
-      <button data-view="deals" type="button">交易</button>
-      <button data-view="actions" type="button">跟进任务</button>
-      <button data-view="funnel" type="button">销售漏斗</button>
-      <button data-view="activity" type="button">活动时间线</button>
-    </nav>
+    <div class="dealpilot-workspace-row"><span>工作区</span><strong data-workspace-name>未选择</strong></div>
+    <button class="dealpilot-new" data-new-session type="button"><span aria-hidden="true">＋</span> 新建对话</button>
+    <div class="dealpilot-section-label">最近对话</div>
+    <div class="dealpilot-sessions" data-sessions><span class="dealpilot-session-dot"></span>完成工作区选择后显示</div>
     <button class="dealpilot-change" data-change-workspace type="button">切换工作区</button>`;
     attachDealPilotSidebar(panel, true);
-    const board = document.createElement('section');
-    board.className = 'dealpilot-board';
-    board.hidden = true;
-    board.innerHTML = `<header><strong data-board-title>今日工作</strong><div class="dealpilot-board-actions"><button data-board-refresh type="button" aria-label="刷新业务数据" title="刷新">↻</button><button data-board-close type="button" aria-label="关闭业务视图" title="关闭">×</button></div></header><div data-board-content>加载中...</div>`;
-    document.body.append(board);
-    // DSH re-creates pane contents while switching sessions. Keep the product
-    // panel attached to the native conversation column when that happens.
-    const conversationColumn = document.querySelector('[data-pane="conversation"], [class*="centerCol"]');
-    if (conversationColumn && !conversationColumn.contains(board))
-        conversationColumn.append(board);
+    const contextPanel = document.createElement('aside');
+    contextPanel.className = 'dealpilot-context';
+    contextPanel.hidden = true;
+    contextPanel.innerHTML = `
+    <header class="dealpilot-context-header">
+      <div><span class="dealpilot-eyebrow">业务上下文</span><strong data-context-workspace>DealPilot</strong></div>
+      <div class="dealpilot-icon-actions"><button data-context-refresh type="button" aria-label="刷新业务数据" title="刷新">↻</button><button data-context-collapse type="button" aria-label="收起业务上下文" title="收起">×</button></div>
+    </header>
+    <div class="dealpilot-context-scroll" data-context-content><div class="dealpilot-loading">正在读取销售工作区...</div></div>`;
+    const contextLauncher = document.createElement('button');
+    contextLauncher.className = 'dealpilot-context-launcher';
+    contextLauncher.type = 'button';
+    contextLauncher.hidden = true;
+    contextLauncher.setAttribute('aria-label', '打开业务上下文');
+    contextLauncher.innerHTML = '<span>D</span><strong>业务上下文</strong>';
+    const workbench = document.createElement('section');
+    workbench.className = 'dealpilot-workbench';
+    workbench.hidden = true;
+    workbench.innerHTML = `
+    <header class="dealpilot-workbench-header">
+      <div><span class="dealpilot-eyebrow">DealPilot</span><h2 data-board-title>今日工作</h2><p data-board-subtitle>聚焦需要推进的销售事项</p></div>
+      <div class="dealpilot-icon-actions"><button data-board-refresh type="button" aria-label="刷新业务数据" title="刷新">↻</button><button data-board-close type="button" aria-label="关闭完整工作台" title="关闭">×</button></div>
+    </header>
+    <nav class="dealpilot-tabs" aria-label="业务视图">${Object.entries(VIEW_TITLES).map(([view, label]) => `<button data-view="${view}" type="button">${label}</button>`).join('')}</nav>
+    <div class="dealpilot-workbench-content" data-board-content><div class="dealpilot-loading">加载中...</div></div>`;
     const shade = document.createElement('div');
     shade.className = 'dealpilot-onboarding';
-    shade.innerHTML = `<div class="dealpilot-onboarding-card"><div class="dealpilot-kicker">DealPilot</div><h1>选择一个工作区</h1><p>先绑定销售资料所在的工作区，之后对话和业务视图都会使用它。</p><label for="dealpilot-workspace-select">工作区</label><select id="dealpilot-workspace-select"><option value="">加载中...</option></select><div class="dealpilot-status" data-status>正在加载工作区...</div><div class="dealpilot-onboarding-actions"><button data-initialize hidden type="button">初始化并进入</button><button data-cancel-workspace hidden type="button">取消</button></div></div>`;
-    document.body.append(shade);
+    shade.innerHTML = `
+    <div class="dealpilot-onboarding-card">
+      <div class="dealpilot-kicker">DEALPILOT SETUP</div><h1>连接你的销售工作区</h1>
+      <p>客户、交易和跟进都保存在所选工作区。DealPilot 只会读取和操作这里的数据。</p>
+      <div class="dealpilot-setup-steps"><span class="active">1 选择</span><span>2 检测</span><span>3 进入</span></div>
+      <label for="dealpilot-workspace-select">工作区</label><select id="dealpilot-workspace-select"><option value="">加载中...</option></select>
+      <div class="dealpilot-status" data-status>正在加载工作区...</div>
+      <div class="dealpilot-onboarding-actions"><button data-initialize hidden type="button">初始化并进入</button><button data-cancel-workspace hidden type="button">取消</button></div>
+    </div>`;
+    document.body.append(contextPanel, contextLauncher, workbench, shade);
     const style = document.createElement('style');
-    style.textContent = `
-    .dealpilot-route-panel{position:relative;z-index:1;width:auto;height:100%;min-height:0;padding:10px 8px;color:#20242a;font:14px/1.4 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;display:flex;flex-direction:column;gap:10px;overflow:auto;background:transparent;border:0;box-shadow:none}
-    .dealpilot-brand{display:flex;align-items:center;gap:10px}.dealpilot-mark{width:30px;height:30px;border-radius:6px;background:#17202b;color:#fff;display:grid;place-items:center;font-weight:700}.dealpilot-brand strong{display:block;font-size:15px}.dealpilot-brand small{display:block;color:#7b838e;font-size:11px;margin-top:2px}
-    .dealpilot-current{border:1px solid #e1e5ea;border-radius:6px;padding:10px 11px;background:#fafbfc}.dealpilot-current span{display:block;color:#78808a;font-size:11px}.dealpilot-current strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:3px;font-size:13px}
-    .dealpilot-new,.dealpilot-change,.dealpilot-nav button{width:100%;border:0;border-radius:5px;text-align:left;cursor:pointer;font:inherit}.dealpilot-new{height:36px;padding:0 11px;background:#1769e0;color:#fff;font-weight:600}.dealpilot-new:disabled{opacity:.5;cursor:wait}.dealpilot-section-label{color:#8a929d;font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-top:5px}.dealpilot-sessions{color:#7c848e;font-size:12px;padding:0 8px}.dealpilot-nav{display:flex;flex-direction:column;gap:2px;margin-top:2px}.dealpilot-nav button{background:transparent;padding:8px 10px;color:#4d5662}.dealpilot-nav button:hover,.dealpilot-nav button.active{background:#edf4ff;color:#1769e0;font-weight:600}.dealpilot-change{margin-top:auto;padding:8px 10px;background:#f5f6f8;color:#59616c;font-size:12px}
-    .dealpilot-onboarding{position:fixed;z-index:2147482999;inset:0;background:rgba(246,248,250,.92);display:grid;place-items:center;padding:24px}.dealpilot-onboarding[hidden]{display:none}.dealpilot-onboarding-card{width:min(440px,100%);background:#fff;border:1px solid #dfe4ea;border-radius:8px;padding:28px;box-shadow:0 12px 40px rgba(18,28,45,.12)}.dealpilot-kicker{font-size:12px;color:#1769e0;font-weight:700;text-transform:uppercase;letter-spacing:.08em}.dealpilot-onboarding h1{font-size:24px;margin:8px 0}.dealpilot-onboarding p{margin:0 0 20px;color:#68717c;font-size:13px}.dealpilot-onboarding label{display:block;font-size:12px;color:#5e6772;margin-bottom:6px}.dealpilot-onboarding select{width:100%;height:40px;border:1px solid #d6dce3;border-radius:5px;padding:0 10px;background:#fff;font:inherit}.dealpilot-status{min-height:34px;padding:10px 0;color:#69727d;font-size:12px}.dealpilot-status.error{color:#b42318}.dealpilot-onboarding-card button[data-initialize]{width:100%;height:38px;border:0;border-radius:5px;background:#1769e0;color:#fff;cursor:pointer;font-weight:600}.dealpilot-board{position:fixed;z-index:2147482998;right:0;top:0;bottom:0;width:min(680px,94vw);background:#fff;border-left:1px solid #e0e5eb;box-shadow:-8px 0 24px rgba(18,28,45,.1);overflow:auto}.dealpilot-board[hidden]{display:none}.dealpilot-board header{height:52px;padding:0 14px;border-bottom:1px solid #e8ebef;display:flex;align-items:center;justify-content:space-between}.dealpilot-board-actions{display:flex;gap:6px}.dealpilot-board header button{width:28px;height:28px;border:1px solid #d9dfe6;border-radius:5px;background:#fff;color:#59616c;cursor:pointer;font-size:18px}.dealpilot-board header button:hover{border-color:#1769e0;color:#1769e0}.dealpilot-board [data-board-content]{padding:14px}.dealpilot-board-toolbar{display:flex;gap:7px;margin-bottom:12px}.dealpilot-board-toolbar input,.dealpilot-board-toolbar select{height:34px;border:1px solid #d6dce3;border-radius:5px;padding:0 9px;background:#fff;color:#303741;font:12px inherit}.dealpilot-board-toolbar input{flex:1;min-width:0}.dealpilot-board-layout{display:grid;grid-template-columns:minmax(230px,1fr) minmax(230px,1fr);gap:12px;align-items:start}.dealpilot-board-list,.dealpilot-board-detail{min-width:0}.dealpilot-board-detail{border-left:1px solid #edf0f3;padding-left:12px;min-height:260px}.dealpilot-board-detail h3{margin:0 0 9px;font-size:16px;color:#20242a}.dealpilot-board-detail h4{margin:14px 0 6px;font-size:11px;color:#7a828d;text-transform:uppercase;letter-spacing:.04em}.dealpilot-board-detail p{margin:4px 0;color:#59616c;font-size:12px;line-height:1.55}.dealpilot-detail-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}.dealpilot-detail-actions button{border:1px solid #d6dce3;border-radius:5px;background:#fff;color:#1769e0;padding:6px 8px;font:12px inherit;cursor:pointer}.dealpilot-detail-actions button:hover{background:#edf4ff}.dealpilot-board-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:12px}.dealpilot-board-metrics div{border:1px solid #e1e5ea;border-radius:5px;padding:8px}.dealpilot-board-metrics b{display:block;font-size:18px}.dealpilot-board-metrics span{font-size:10px;color:#7a828d}.dealpilot-board-item{display:block;width:100%;text-align:left;border:1px solid #e1e5ea;border-radius:5px;background:#fff;padding:10px;margin:0 0 7px;cursor:pointer}.dealpilot-board-item:hover,.dealpilot-board-item.selected{border-color:#1769e0;background:#f7faff}.dealpilot-board-item strong{display:block;font-size:13px}.dealpilot-board-item small{display:block;color:#737c87;margin-top:3px}.dealpilot-board-empty{padding:30px 8px;text-align:center;color:#7b838e;font-size:13px}.dealpilot-board-funnel{margin-bottom:8px}.dealpilot-board-funnel-row{display:grid;grid-template-columns:86px 1fr 28px;align-items:center;gap:7px;margin:7px 0;font-size:12px;color:#59616c}.dealpilot-board-funnel-bar{height:8px;background:#edf1f5;border-radius:4px;overflow:hidden}.dealpilot-board-funnel-bar i{display:block;height:100%;background:#1769e0;border-radius:4px}.dealpilot-route body:has(.dealpilot-board:not([hidden])){padding-right:min(680px,94vw)}.dealpilot-native-workspaces-hidden,.dealpilot-native-new-session-hidden{display:none!important}@media(max-width:900px){.dealpilot-board-layout{grid-template-columns:1fr}.dealpilot-board-detail{border-left:0;border-top:1px solid #edf0f3;padding:12px 0 0}.dealpilot-route body:has(.dealpilot-board:not([hidden])){padding-right:min(680px,94vw)}}@media(max-width:720px){.dealpilot-onboarding-card{padding:22px}}
-  `;
-    style.textContent += '.dealpilot-onboarding-actions{display:flex;gap:8px;margin-top:4px}.dealpilot-onboarding-actions button{flex:1;height:38px;border:0;border-radius:5px;cursor:pointer;font:inherit;font-weight:600}.dealpilot-onboarding-card button[data-cancel-workspace]{background:#f1f3f5;color:#59616c}.dealpilot-onboarding-card button[data-cancel-workspace]:hover{background:#e5e8ec}';
+    style.dataset.dealpilotProductStyle = 'true';
+    style.textContent = productStyles;
     document.head.append(style);
+    attachConversationProductUi(contextPanel, contextLauncher, workbench);
     const select = shade.querySelector('#dealpilot-workspace-select');
     const status = shade.querySelector('[data-status]');
     const initializeButton = shade.querySelector('[data-initialize]');
@@ -66,6 +86,12 @@ function mountDealPilot(runtime) {
     let inspection;
     let workspaceBeforePicker = '';
     let inspectVersion = 0;
+    let snapshot;
+    let activeView = 'today';
+    let selectedItem;
+    let searchQuery = '';
+    let filterValue = 'all';
+    let sortValue = 'priority';
     const api = async (url, options) => {
         const response = await fetch(url, options);
         const data = await response.json();
@@ -74,18 +100,11 @@ function mountDealPilot(runtime) {
         return data;
     };
     const setStatus = (text, error = false) => { status.textContent = text; status.classList.toggle('error', error); };
-    const setWorkspaceName = (name) => { panel.querySelector('[data-workspace-name]').textContent = name; };
-    const boardTitles = { today: '今日工作', customers: '客户', deals: '交易', actions: '跟进任务', funnel: '销售漏斗', activity: '活动时间线' };
-    let snapshot;
-    let activeView = 'today';
-    let selectedItem;
-    let searchQuery = '';
-    let filterValue = 'all';
-    const actionRows = () => (snapshot?.deals || []).flatMap((deal) => (deal.actions || []).map((action) => ({
-        ...action,
-        deal_title: deal.title,
-        customer_name: deal.customer_name,
-    })));
+    const setWorkspaceName = (name) => {
+        panel.querySelector('[data-workspace-name]').textContent = name;
+        contextPanel.querySelector('[data-context-workspace]').textContent = name;
+    };
+    const actionRows = () => (snapshot?.deals || []).flatMap((deal) => (deal.actions || []).map((action) => ({ ...action, deal_title: deal.title, customer_name: deal.customer_name })));
     const sourceForView = (view) => {
         if (!snapshot)
             return [];
@@ -108,39 +127,58 @@ function mountDealPilot(runtime) {
         if (view === 'deals')
             return [item.customer_name, item.funnel_stage, item.risk_level].filter(Boolean).join(' · ');
         if (view === 'actions')
-            return [item.customer_name, item.deal_title, item.status, item.due_at].filter(Boolean).join(' · ');
+            return [item.customer_name, item.deal_title, item.status, formatDate(item.due_at)].filter(Boolean).join(' · ');
         if (view === 'today')
-            return [item.customer_name, item.deal_title, item.bucket, item.due_at].filter(Boolean).join(' · ');
+            return [item.customer_name, item.deal_title, bucketLabel(item.bucket), formatDate(item.due_at)].filter(Boolean).join(' · ');
         if (view === 'funnel')
-            return `数量 ${item.count ?? 0}`;
-        return [item.occurred_at, item.channel, item.customer_ref || item.deal_ref].filter(Boolean).join(' · ');
+            return `${item.count ?? 0} 笔交易`;
+        return [formatDate(item.occurred_at, true), item.channel, item.customer_ref || item.deal_ref].filter(Boolean).join(' · ');
+    };
+    const itemTone = (item, view) => {
+        if (view === 'today')
+            return item.bucket || 'today';
+        if (view === 'deals')
+            return ['high', 'critical'].includes(item.risk_level) ? 'risk' : 'neutral';
+        if (view === 'actions')
+            return item.status === 'blocked' ? 'risk' : item.status === 'completed' ? 'done' : 'today';
+        return 'neutral';
     };
     const matchesFilter = (item, view) => {
         if (filterValue === 'all')
             return true;
         if (view === 'customers')
-            return filterValue === 'priority' ? item.priority === 'high' : item.relationship_stage === filterValue;
+            return filterValue === 'priority' ? ['P1', 'high'].includes(item.priority) : item.relationship_stage === filterValue;
         if (view === 'deals')
             return filterValue === 'risk' ? ['high', 'critical'].includes(item.risk_level) : filterValue === 'active' ? item.status === 'active' : item.funnel_stage === filterValue;
         if (view === 'actions')
-            return filterValue === 'overdue' ? item.status !== 'completed' && item.due_at && Date.parse(item.due_at) < Date.now() : filterValue === 'open' ? item.status !== 'completed' && item.status !== 'cancelled' : item.status === filterValue;
+            return filterValue === 'overdue' ? item.status !== 'completed' && item.due_at && Date.parse(item.due_at) < Date.now() : filterValue === 'open' ? !['completed', 'cancelled'].includes(item.status) : item.status === filterValue;
         if (view === 'today')
-            return filterValue === 'overdue' ? item.bucket === 'overdue' : filterValue === 'risk' ? item.bucket === 'risk' : item.bucket === filterValue;
+            return item.bucket === filterValue;
         return true;
     };
-    const filteredRows = (view) => sourceForView(view).filter((item) => {
+    const priorityRank = (item) => ({ critical: 0, high: 1, P1: 1, P2: 2, medium: 2, P3: 3, low: 4 }[item.priority || item.risk_level] ?? 5);
+    const sortedRows = (view) => sourceForView(view).filter((item) => {
         const haystack = `${itemTitle(item, view)} ${itemMeta(item, view)} ${item.risk_summary || item.reason || ''}`.toLowerCase();
         return (!searchQuery || haystack.includes(searchQuery.toLowerCase())) && matchesFilter(item, view);
-    }).slice(0, 50);
+    }).sort((a, b) => {
+        if (sortValue === 'name')
+            return itemTitle(a, view).localeCompare(itemTitle(b, view), 'zh-CN');
+        if (sortValue === 'date') {
+            const first = String(a.due_at || a.occurred_at || '');
+            const second = String(b.due_at || b.occurred_at || '');
+            return view === 'activity' ? second.localeCompare(first) : first.localeCompare(second);
+        }
+        return priorityRank(a) - priorityRank(b);
+    }).slice(0, 100);
     const filterOptions = (view) => {
         if (view === 'customers')
-            return [['all', '全部'], ['priority', '高优先级'], ['new', '新客户'], ['qualified', '已筛选']];
+            return [['all', '全部客户'], ['priority', '高优先级'], ['new', '新客户'], ['qualified', '已筛选']];
         if (view === 'deals')
-            return [['all', '全部'], ['active', '活跃交易'], ['risk', '高风险'], ...((snapshot?.funnel || []).map((x) => [x.stage, x.stage]))];
+            return [['all', '全部交易'], ['active', '活跃交易'], ['risk', '高风险'], ...((snapshot?.funnel || []).map((x) => [x.stage, x.stage]))];
         if (view === 'actions')
-            return [['all', '全部'], ['open', '未完成'], ['overdue', '已逾期'], ['planned', '待安排'], ['in_progress', '进行中'], ['completed', '已完成'], ['blocked', '已阻塞']];
+            return [['all', '全部任务'], ['open', '未完成'], ['overdue', '已逾期'], ['planned', '待安排'], ['in_progress', '进行中'], ['completed', '已完成'], ['blocked', '已阻塞']];
         if (view === 'today')
-            return [['all', '全部'], ['overdue', '逾期'], ['today', '今天'], ['risk', '风险'], ['confirmation', '待确认']];
+            return [['all', '全部事项'], ['overdue', '逾期'], ['today', '今天'], ['risk', '风险'], ['confirmation', '待确认']];
         return [['all', '全部']];
     };
     const promptForItem = (item, view) => {
@@ -151,91 +189,161 @@ function mountDealPilot(runtime) {
             return `请分析交易“${title}”（客户：${item.customer_name || '未知'}），重点说明当前风险、漏斗阶段和下一步行动。`;
         if (view === 'actions' || view === 'today')
             return `请处理跟进任务“${title}”（${item.customer_name || ''} / ${item.deal_title || ''}）。先确认事实，再告诉我是否需要完成、延期或阻塞。`;
-        return `请解释这条业务事件，并说明它对当前销售工作的影响：${title}。`;
+        return `请解释这条业务记录，并说明它对当前销售工作的影响：${title}。`;
     };
     const sendToConversation = (prompt) => {
         const input = document.querySelector('textarea:not([disabled]), textarea') || document.querySelector('[contenteditable="true"]');
         if (!input)
             return;
-        if (input instanceof HTMLTextAreaElement)
-            input.value = prompt;
+        if (input instanceof HTMLTextAreaElement) {
+            const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+            if (setter)
+                setter.call(input, prompt);
+            else
+                input.value = prompt;
+        }
         else
             input.textContent = prompt;
         input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: prompt }));
         input.focus();
-        board.querySelector('[data-board-feedback]').textContent = '已放入对话输入框，确认后发送。';
+        closeWorkbench();
+    };
+    const renderEmptyState = () => `
+    <div class="dealpilot-empty-state">
+      <span class="dealpilot-empty-mark">D</span><h3>开始建立销售脉络</h3>
+      <p>当前工作区还没有客户、交易或跟进。可以从一条对话开始。</p>
+      <div class="dealpilot-empty-actions">${EMPTY_PROMPTS.map(([label, prompt]) => `<button data-prompt="${escapeHtml(prompt)}" type="button">${escapeHtml(label)}</button>`).join('')}</div>
+    </div>`;
+    const renderContext = () => {
+        const content = contextPanel.querySelector('[data-context-content]');
+        if (!snapshot) {
+            content.innerHTML = '<div class="dealpilot-loading">正在读取销售工作区...</div>';
+            return;
+        }
+        const s = snapshot.summary || {};
+        const today = (snapshot.today || []).slice(0, 4);
+        const activity = (snapshot.activity || []).slice(0, 3);
+        const isEmpty = !(s.customers || s.active_deals || s.today || activity.length);
+        const todayOnly = (snapshot.today || []).filter((item) => item.bucket === 'today').length;
+        content.innerHTML = `
+      <section class="dealpilot-summary" aria-label="销售摘要">
+        <button data-summary-view="today" data-filter="overdue" class="tone-overdue" type="button"><b>${s.overdue || 0}</b><span>逾期</span></button>
+        <button data-summary-view="today" data-filter="today" class="tone-today" type="button"><b>${todayOnly}</b><span>今天</span></button>
+        <button data-summary-view="today" data-filter="risk" class="tone-risk" type="button"><b>${s.risks || 0}</b><span>风险</span></button>
+        <button data-summary-view="today" data-filter="confirmation" class="tone-confirmation" type="button"><b>${s.confirmation || 0}</b><span>待确认</span></button>
+      </section>
+      ${isEmpty ? renderEmptyState() : `
+        <section class="dealpilot-context-section"><div class="dealpilot-section-head"><strong>优先处理</strong><button data-open-view="today" type="button">查看全部</button></div>
+          <div class="dealpilot-priority-list">${today.length ? today.map((item, index) => `<button data-context-item="${index}" type="button"><i class="tone-dot tone-${escapeHtml(itemTone(item, 'today'))}"></i><span><strong>${escapeHtml(itemTitle(item, 'today'))}</strong><small>${escapeHtml(itemMeta(item, 'today'))}</small></span></button>`).join('') : '<div class="dealpilot-quiet-state">今天没有必须处理的事项</div>'}</div>
+        </section>
+        <section class="dealpilot-context-section"><div class="dealpilot-section-head"><strong>最近活动</strong><button data-open-view="activity" type="button">查看全部</button></div>
+          <div class="dealpilot-activity-list">${activity.length ? activity.map((item) => `<div><span>${escapeHtml(formatDate(item.occurred_at, true))}</span><strong>${escapeHtml(itemTitle(item, 'activity'))}</strong></div>`).join('') : '<div class="dealpilot-quiet-state">暂无业务活动</div>'}</div>
+        </section>`}
+      <button class="dealpilot-open-workbench" data-open-workbench type="button"><span>打开完整工作台</span><span aria-hidden="true">→</span></button>
+      <div class="dealpilot-context-meta"><span>${s.customers || 0} 个客户</span><span>${s.active_deals || 0} 笔活跃交易</span><span>刚刚更新</span></div>`;
+        content.querySelectorAll('[data-prompt]').forEach((button) => button.addEventListener('click', () => sendToConversation(button.dataset.prompt || '')));
+        content.querySelectorAll('[data-open-view]').forEach((button) => button.addEventListener('click', () => openWorkbench(button.dataset.openView || 'today')));
+        content.querySelectorAll('[data-summary-view]').forEach((button) => button.addEventListener('click', () => {
+            filterValue = button.dataset.filter || 'all';
+            openWorkbench(button.dataset.summaryView || 'today', true);
+        }));
+        content.querySelectorAll('[data-context-item]').forEach((button) => button.addEventListener('click', () => {
+            selectedItem = (snapshot.today || [])[Number(button.dataset.contextItem)];
+            openWorkbench('today', true);
+        }));
+        content.querySelector('[data-open-workbench]')?.addEventListener('click', () => openWorkbench('today'));
     };
     const renderDetail = (item, view) => {
-        const detail = board.querySelector('[data-board-detail]');
+        const detail = workbench.querySelector('[data-board-detail]');
         if (!detail)
             return;
         if (!item) {
-            detail.innerHTML = '<div class="dealpilot-board-empty">选择一条记录查看详情</div>';
+            detail.innerHTML = '<div class="dealpilot-detail-empty"><span>选择一条记录</span><p>在这里查看业务事实和下一步操作。</p></div>';
             return;
         }
-        const title = itemTitle(item, view);
-        const details = [];
+        const fields = [];
         if (view === 'customers')
-            details.push(`<h4>客户概况</h4><p>关系阶段：${escapeHtml(item.relationship_stage || '未知')}<br>市场：${escapeHtml(item.market || '未知')}<br>ICP：${escapeHtml(item.icp_fit || '未知')}<br>优先级：${escapeHtml(item.priority || '未知')}</p>`);
+            fields.push(['关系阶段', item.relationship_stage], ['市场', item.market], ['ICP', item.icp_fit], ['优先级', item.priority], ['状态', item.status]);
         if (view === 'deals')
-            details.push(`<h4>交易状态</h4><p>客户：${escapeHtml(item.customer_name || '未知')}<br>漏斗阶段：${escapeHtml(item.funnel_stage || '未知')}<br>风险：${escapeHtml(item.risk_level || '未知')}<br>${escapeHtml(item.risk_summary || '暂无风险说明')}</p>`);
+            fields.push(['客户', item.customer_name], ['漏斗阶段', item.funnel_stage], ['风险', item.risk_level], ['优先级', item.priority], ['状态', item.status]);
         if (view === 'actions' || view === 'today')
-            details.push(`<h4>跟进信息</h4><p>客户：${escapeHtml(item.customer_name || '未知')}<br>交易：${escapeHtml(item.deal_title || '未知')}<br>状态：${escapeHtml(item.status || item.bucket || '未知')}<br>到期：${escapeHtml(item.due_at || '未设置')}<br>${escapeHtml(item.reason || '')}</p>`);
+            fields.push(['客户', item.customer_name], ['交易', item.deal_title], ['状态', item.status || bucketLabel(item.bucket)], ['到期', formatDate(item.due_at)], ['优先级', item.priority]);
         if (view === 'activity')
-            details.push(`<h4>事件信息</h4><p>时间：${escapeHtml(item.occurred_at || '未知')}<br>渠道：${escapeHtml(item.channel || '未知')}<br>客户：${escapeHtml(item.customer_ref || '未关联')}<br>交易：${escapeHtml(item.deal_ref || '未关联')}</p>`);
+            fields.push(['时间', formatDate(item.occurred_at, true)], ['渠道', item.channel], ['客户引用', item.customer_ref], ['交易引用', item.deal_ref]);
         if (view === 'funnel')
-            details.push(`<h4>阶段概览</h4><p>当前阶段包含 ${escapeHtml(item.count ?? 0)} 笔交易。</p>`);
-        detail.innerHTML = `<h3>${escapeHtml(title)}</h3>${details.join('')}<div class="dealpilot-detail-actions"><button data-ask-agent type="button">在对话中分析</button>${view === 'actions' || view === 'today' ? '<button data-action-update type="button">请求处理</button>' : ''}</div>`;
+            fields.push(['阶段', item.stage], ['交易数量', item.count]);
+        detail.innerHTML = `
+      <div class="dealpilot-detail-head"><span class="dealpilot-status-pill tone-${escapeHtml(itemTone(item, view))}">${escapeHtml(statusLabel(item, view))}</span><h3>${escapeHtml(itemTitle(item, view))}</h3><p>${escapeHtml(item.risk_summary || item.reason || itemMeta(item, view) || '当前工作区中的业务记录')}</p></div>
+      <dl>${fields.filter(([, value]) => value !== undefined && value !== '').map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value || '未知')}</dd></div>`).join('')}</dl>
+      <div class="dealpilot-detail-actions"><button data-ask-agent type="button">在对话中分析</button>${view === 'actions' || view === 'today' ? '<button data-action-update type="button">处理这项跟进</button>' : ''}</div>`;
         detail.querySelector('[data-ask-agent]')?.addEventListener('click', () => sendToConversation(promptForItem(item, view)));
         detail.querySelector('[data-action-update]')?.addEventListener('click', () => sendToConversation(promptForItem(item, view)));
     };
     const renderBoard = (view) => {
         activeView = view;
-        const content = board.querySelector('[data-board-content]');
-        board.querySelector('[data-board-title]').textContent = boardTitles[view] || '业务视图';
+        workbench.querySelector('[data-board-title]').textContent = VIEW_TITLES[view] || '销售工作台';
+        workbench.querySelector('[data-board-subtitle]').textContent = boardSubtitle(view, snapshot);
+        workbench.querySelectorAll('[data-view]').forEach((button) => button.classList.toggle('active', button.dataset.view === view));
+        const content = workbench.querySelector('[data-board-content]');
         if (!snapshot) {
-            content.innerHTML = '<div class="dealpilot-board-empty">暂无业务数据</div>';
+            content.innerHTML = '<div class="dealpilot-loading">正在读取业务数据...</div>';
             return;
         }
-        const s = snapshot;
-        const metrics = `<div class="dealpilot-board-metrics"><div><b>${s.summary.customers}</b><span>客户</span></div><div><b>${s.summary.active_deals}</b><span>活跃交易</span></div><div><b>${s.summary.today}</b><span>今日任务</span></div></div>`;
         const options = filterOptions(view).map(([value, label]) => `<option value="${escapeHtml(value)}"${value === filterValue ? ' selected' : ''}>${escapeHtml(label)}</option>`).join('');
-        const toolbar = `<div class="dealpilot-board-toolbar"><input data-board-search type="search" placeholder="搜索当前视图" value="${escapeHtml(searchQuery)}"><select data-board-filter>${options}</select></div><div class="dealpilot-board-layout"><div class="dealpilot-board-list" data-board-list></div><aside class="dealpilot-board-detail" data-board-detail></aside></div><div data-board-feedback class="dealpilot-board-feedback"></div>`;
-        content.innerHTML = metrics + (view === 'funnel' ? `<div class="dealpilot-board-funnel">${(s.funnel || []).map((item) => `<div class="dealpilot-board-funnel-row"><span>${escapeHtml(item.stage)}</span><div class="dealpilot-board-funnel-bar"><i style="width:${Math.min(100, (Number(item.count || 0) / Math.max(1, ...((s.funnel || []).map((x) => Number(x.count || 0))))) * 100)}%"></i></div><b>${escapeHtml(item.count)}</b></div>`).join('')}</div>${toolbar}` : toolbar);
+        content.innerHTML = `
+      <div class="dealpilot-board-toolbar">
+        <label class="dealpilot-search"><span aria-hidden="true">⌕</span><input data-board-search type="search" aria-label="搜索当前视图" placeholder="搜索${escapeHtml(VIEW_TITLES[view])}" value="${escapeHtml(searchQuery)}"></label>
+        <select data-board-filter aria-label="筛选当前视图">${options}</select>
+        <select data-board-sort aria-label="排序当前视图"><option value="priority"${sortValue === 'priority' ? ' selected' : ''}>优先级</option><option value="name"${sortValue === 'name' ? ' selected' : ''}>名称</option><option value="date"${sortValue === 'date' ? ' selected' : ''}>日期</option></select>
+      </div>
+      ${view === 'funnel' ? renderFunnel(snapshot.funnel || []) : ''}
+      <div class="dealpilot-board-layout"><div class="dealpilot-board-list" data-board-list></div><aside class="dealpilot-board-detail" data-board-detail></aside></div>`;
+        const rows = sortedRows(view);
         const list = content.querySelector('[data-board-list]');
-        if (list) {
-            const rows = filteredRows(view);
-            list.innerHTML = rows.length ? rows.map((item, index) => `<button class="dealpilot-board-item${selectedItem === item ? ' selected' : ''}" data-item-index="${index}" type="button"><strong>${escapeHtml(itemTitle(item, view))}</strong><small>${escapeHtml(itemMeta(item, view))}</small></button>`).join('') : '<div class="dealpilot-board-empty">没有匹配的数据</div>';
-            list.querySelectorAll('[data-item-index]').forEach((node) => node.addEventListener('click', () => { selectedItem = filteredRows(view)[Number(node.dataset.itemIndex)]; renderBoard(view); renderDetail(selectedItem, view); }));
-        }
-        content.querySelector('[data-board-search]')?.addEventListener('input', (event) => { searchQuery = event.target.value; renderBoard(view); renderDetail(selectedItem, view); });
+        list.innerHTML = rows.length ? rows.map((item, index) => `
+      <button class="dealpilot-board-item${selectedItem === item ? ' selected' : ''}" data-item-index="${index}" type="button"><i class="tone-dot tone-${escapeHtml(itemTone(item, view))}"></i><span><strong>${escapeHtml(itemTitle(item, view))}</strong><small>${escapeHtml(itemMeta(item, view))}</small></span><span class="dealpilot-row-arrow" aria-hidden="true">›</span></button>`).join('') : renderEmptyState();
+        list.querySelectorAll('[data-item-index]').forEach((node) => node.addEventListener('click', () => { selectedItem = sortedRows(view)[Number(node.dataset.itemIndex)]; renderBoard(view); }));
+        list.querySelectorAll('[data-prompt]').forEach((button) => button.addEventListener('click', () => sendToConversation(button.dataset.prompt || '')));
+        content.querySelector('[data-board-search]')?.addEventListener('input', (event) => { searchQuery = event.target.value; selectedItem = undefined; renderBoard(view); });
         content.querySelector('[data-board-filter]')?.addEventListener('change', (event) => { filterValue = event.target.value; selectedItem = undefined; renderBoard(view); });
+        content.querySelector('[data-board-sort]')?.addEventListener('change', (event) => { sortValue = event.target.value; renderBoard(view); });
         renderDetail(selectedItem, view);
     };
-    const showBoard = async (view) => {
-        board.hidden = false;
-        selectedItem = undefined;
-        searchQuery = '';
-        filterValue = 'all';
+    const refreshSnapshot = async () => {
+        if (!selectedId)
+            return;
+        snapshot = await api(`/api/dealpilot/snapshot?workspaceId=${encodeURIComponent(selectedId)}`);
+        renderContext();
+        if (!workbench.hidden)
+            renderBoard(activeView);
+    };
+    const openWorkbench = (view, preserveState = false) => {
+        if (!preserveState) {
+            selectedItem = undefined;
+            searchQuery = '';
+            filterValue = 'all';
+            sortValue = view === 'activity' ? 'date' : 'priority';
+        }
+        workbench.hidden = false;
+        contextPanel.hidden = true;
+        contextLauncher.hidden = true;
+        document.body.classList.add('dealpilot-workbench-open');
         renderBoard(view);
-        if (!snapshot) {
-            try {
-                snapshot = await api(`/api/dealpilot/snapshot?workspaceId=${encodeURIComponent(selectedId)}`);
-                renderBoard(view);
-            }
-            catch (err) {
-                board.querySelector('[data-board-content]').innerHTML = `<div class="dealpilot-board-empty">${escapeHtml(err.message)}</div>`;
-            }
-        }
     };
-    const getSessions = () => {
-        try {
-            return runtime?.get?.('sessions');
-        }
-        catch {
-            return undefined;
-        }
-    };
+    function closeWorkbench() {
+        workbench.hidden = true;
+        document.body.classList.remove('dealpilot-workbench-open');
+        if (document.body.classList.contains('dealpilot-context-collapsed'))
+            contextLauncher.hidden = false;
+        else
+            contextPanel.hidden = false;
+    }
+    const getSessions = () => { try {
+        return runtime?.get?.('sessions');
+    }
+    catch {
+        return undefined;
+    } };
     const createNativeSession = async (workspaceId) => {
         const sessions = getSessions();
         const create = sessions?.manager?.api?.sessions?.create;
@@ -252,6 +360,16 @@ function mountDealPilot(runtime) {
             sessions.manager.select(id);
         return id;
     };
+    const enterReadyState = async (session, fallbackName) => {
+        shade.hidden = true;
+        cancelButton.hidden = true;
+        setWorkspaceName(session.workspaceName || inspection?.name || fallbackName);
+        panel.querySelector('[data-sessions]').innerHTML = '<span class="dealpilot-session-dot active"></span>当前对话';
+        document.body.classList.add('dealpilot-ready');
+        contextPanel.hidden = false;
+        contextLauncher.hidden = true;
+        await refreshSnapshot();
+    };
     const bindSession = async (workspaceId) => {
         let dshSessionId = '';
         try {
@@ -263,11 +381,7 @@ function mountDealPilot(runtime) {
         const session = await api('/api/dealpilot/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceId, dshSessionId: dshSessionId || undefined }) });
         sessionStorage.setItem('dealpilot.sessionId', session.sessionId);
         sessionStorage.setItem('dealpilot.workspaceId', workspaceId);
-        shade.hidden = true;
-        cancelButton.hidden = true;
-        setWorkspaceName(session.workspaceName || inspection?.name || workspaceId);
-        panel.querySelector('[data-sessions]').textContent = '当前对话';
-        document.body.classList.add('dealpilot-ready');
+        await enterReadyState(session, workspaceId);
     };
     const restoreSession = async (workspaceId) => {
         const savedId = sessionStorage.getItem('dealpilot.sessionId');
@@ -280,11 +394,7 @@ function mountDealPilot(runtime) {
             const sessions = getSessions();
             if (sessions?.manager?.select)
                 sessions.manager.select(savedId);
-            shade.hidden = true;
-            cancelButton.hidden = true;
-            setWorkspaceName(session.workspaceName || inspection?.name || workspaceId);
-            panel.querySelector('[data-sessions]').textContent = '当前对话';
-            document.body.classList.add('dealpilot-ready');
+            await enterReadyState(session, workspaceId);
             return true;
         }
         catch {
@@ -296,30 +406,26 @@ function mountDealPilot(runtime) {
         selectedId = id;
         initializeButton.hidden = true;
         if (!id) {
-            setStatus('请选择工作区');
+            setStatus('请选择一个工作区');
             return;
         }
-        setStatus('正在检测...');
+        setStatus('正在检测 DealPilot 数据...');
         try {
             inspection = await api('/api/dealpilot/workspaces/inspect', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceId: id }) });
             if (version !== inspectVersion)
                 return;
             if (inspection.status === 'new') {
-                setStatus('这是一个新的工作区，需要先初始化。');
+                setStatus('这是一个新工作区。初始化只会创建 DealPilot 所需目录，不会覆盖现有文件。');
                 initializeButton.hidden = false;
                 return;
             }
             setStatus('已检测到现有销售资料，正在进入...');
-            if (version !== inspectVersion)
-                return;
-            if (!(await restoreSession(id))) {
-                if (version !== inspectVersion)
-                    return;
+            if (!(await restoreSession(id)) && version === inspectVersion)
                 await bindSession(id);
-            }
         }
         catch (err) {
-            setStatus(err.message, true);
+            if (version === inspectVersion)
+                setStatus(err.message, true);
         }
     };
     const load = async () => {
@@ -332,7 +438,7 @@ function mountDealPilot(runtime) {
                 await inspect(saved);
             }
             else
-                setStatus('请选择工作区');
+                setStatus('选择一个已有工作区，或选择空工作区后初始化');
         }
         catch (err) {
             setStatus(`工作区加载失败：${err.message}`, true);
@@ -341,7 +447,7 @@ function mountDealPilot(runtime) {
     select.addEventListener('change', () => inspect(select.value));
     initializeButton.addEventListener('click', async () => {
         initializeButton.disabled = true;
-        setStatus('初始化中...');
+        setStatus('正在初始化 DealPilot...');
         try {
             await api('/api/dealpilot/workspaces/initialize', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceId: selectedId }) });
             await bindSession(selectedId);
@@ -358,7 +464,7 @@ function mountDealPilot(runtime) {
         cancelButton.hidden = false;
         shade.hidden = false;
         select.value = selectedId;
-        setStatus('请选择工作区');
+        setStatus('选择另一个工作区；取消会保留当前工作区');
     });
     cancelButton.addEventListener('click', () => {
         inspectVersion += 1;
@@ -377,6 +483,7 @@ function mountDealPilot(runtime) {
             const nativeId = await createNativeSession(selectedId);
             const created = await api('/api/dealpilot/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceId: selectedId, dshSessionId: nativeId }) });
             sessionStorage.setItem('dealpilot.sessionId', created.sessionId);
+            panel.querySelector('[data-sessions]').innerHTML = '<span class="dealpilot-session-dot active"></span>新对话';
         }
         catch (err) {
             console.warn('[dealpilot] new conversation failed', err);
@@ -385,39 +492,42 @@ function mountDealPilot(runtime) {
             button.disabled = false;
         }
     });
-    panel.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
-        panel.querySelectorAll('[data-view]').forEach(item => item.classList.remove('active'));
-        button.classList.add('active');
-        void showBoard(button.dataset.view || 'today');
-        window.dispatchEvent(new CustomEvent('dealpilot:view', { detail: { view: button.dataset.view, workspaceId: selectedId } }));
-    }));
-    board.querySelector('[data-board-refresh]').addEventListener('click', async () => {
-        if (!selectedId)
-            return;
-        const refresh = board.querySelector('[data-board-refresh]');
-        refresh.disabled = true;
-        try {
-            snapshot = await api(`/api/dealpilot/snapshot?workspaceId=${encodeURIComponent(selectedId)}`);
-            selectedItem = undefined;
-            renderBoard(activeView);
-        }
-        catch (err) {
-            board.querySelector('[data-board-feedback]').textContent = err.message;
-        }
-        finally {
-            refresh.disabled = false;
-        }
+    contextPanel.querySelector('[data-context-refresh]').addEventListener('click', () => void refreshSnapshot());
+    contextPanel.querySelector('[data-context-collapse]').addEventListener('click', () => {
+        contextPanel.hidden = true;
+        contextLauncher.hidden = false;
+        document.body.classList.add('dealpilot-context-collapsed');
     });
-    board.querySelector('[data-board-close]').addEventListener('click', () => { board.hidden = true; });
+    contextLauncher.addEventListener('click', () => {
+        contextPanel.hidden = false;
+        contextLauncher.hidden = true;
+        document.body.classList.remove('dealpilot-context-collapsed');
+    });
+    workbench.querySelectorAll('[data-view]').forEach((button) => button.addEventListener('click', () => {
+        selectedItem = undefined;
+        searchQuery = '';
+        filterValue = 'all';
+        sortValue = button.dataset.view === 'activity' ? 'date' : 'priority';
+        renderBoard(button.dataset.view || 'today');
+    }));
+    workbench.querySelector('[data-board-refresh]').addEventListener('click', () => void refreshSnapshot());
+    workbench.querySelector('[data-board-close]').addEventListener('click', closeWorkbench);
     const nativeObserver = new MutationObserver(() => {
         hideNativeWorkspaceControls();
         attachDealPilotSidebar(panel);
-        const currentConversation = document.querySelector('[data-pane="conversation"], [class*="centerCol"]');
-        if (currentConversation && !currentConversation.contains(board))
-            currentConversation.append(board);
+        attachConversationProductUi(contextPanel, contextLauncher, workbench);
     });
     nativeObserver.observe(document.body, { childList: true, subtree: true });
     load();
+}
+function attachConversationProductUi(contextPanel, launcher, workbench) {
+    const conversation = document.querySelector('[data-pane="conversation"], [class*="centerCol"]');
+    if (!conversation)
+        return;
+    conversation.classList.add('dealpilot-conversation-host');
+    for (const element of [contextPanel, launcher, workbench])
+        if (!conversation.contains(element))
+            conversation.append(element);
 }
 function attachDealPilotSidebar(panel, ensureExpanded = false) {
     const sidebar = document.querySelector('[data-pane="sidebar"], [class*="sidebarCol"]');
@@ -432,27 +542,85 @@ function attachDealPilotSidebar(panel, ensureExpanded = false) {
     sidebar.querySelector('button[class*="newSession"]')?.classList.add('dealpilot-native-new-session-hidden');
     if (!region.contains(panel))
         region.append(panel);
-    if (ensureExpanded) {
-        const expand = sidebar.querySelector('button[aria-label="打开侧边栏"]');
-        if (expand)
-            expand.click();
-    }
+    if (ensureExpanded)
+        sidebar.querySelector('button[aria-label="打开侧边栏"]')?.click();
 }
 function hideNativeWorkspaceControls() {
     const candidates = Array.from(document.querySelectorAll('button, [role="button"], [data-testid], [aria-label]'));
     for (const element of candidates) {
         if (element.textContent?.trim().match(/^(Workspace|工作区|Workspaces|工作空间)$/i) || element.getAttribute('aria-label')?.match(/workspace|工作区/i)) {
-            const parent = element.closest('button, [role="button"], [data-testid]') || element;
-            parent.classList.add('dealpilot-native-hidden');
+            (element.closest('button, [role="button"], [data-testid]') || element).classList.add('dealpilot-native-hidden');
         }
     }
     if (!document.querySelector('style[data-dealpilot-native-style]')) {
         const style = document.createElement('style');
         style.dataset.dealpilotNativeStyle = 'true';
-        style.textContent = '.dealpilot-native-hidden{display:none!important}.dealpilot-route body:not(.dealpilot-ready) textarea,.dealpilot-route body:not(.dealpilot-ready) [contenteditable="true"]{pointer-events:none!important}';
+        style.textContent = '.dealpilot-native-hidden,.dealpilot-native-workspaces-hidden,.dealpilot-native-new-session-hidden{display:none!important}.dealpilot-route body:not(.dealpilot-ready) textarea,.dealpilot-route body:not(.dealpilot-ready) [contenteditable="true"]{pointer-events:none!important}';
         document.head.append(style);
     }
+}
+function renderFunnel(items) {
+    const visible = items.filter((item) => Number(item.count || 0) > 0);
+    if (!visible.length)
+        return '';
+    const max = Math.max(1, ...visible.map((item) => Number(item.count || 0)));
+    return `<section class="dealpilot-funnel"><div class="dealpilot-section-head"><strong>阶段分布</strong><span>${visible.reduce((sum, item) => sum + Number(item.count || 0), 0)} 笔活跃交易</span></div>${visible.map((item) => `<div><span>${escapeHtml(item.stage)}</span><i><b style="width:${Math.max(6, Number(item.count || 0) / max * 100)}%"></b></i><strong>${escapeHtml(item.count)}</strong></div>`).join('')}</section>`;
+}
+function boardSubtitle(view, snapshot) {
+    const count = view === 'customers' ? snapshot?.summary?.customers : view === 'deals' ? snapshot?.summary?.active_deals : view === 'today' ? snapshot?.summary?.today : undefined;
+    const copy = { today: '聚焦需要推进的销售事项', customers: '管理客户关系、市场和优先级', deals: '掌握阶段、风险和下一步行动', actions: '安排、推进和完成跟进', funnel: '查看活跃交易的阶段分布', activity: '追踪最近的业务变化' };
+    return `${copy[view] || '当前销售工作区'}${count !== undefined ? ` · ${count} 条` : ''}`;
+}
+function bucketLabel(value) {
+    return { overdue: '逾期', today: '今天', risk: '风险', confirmation: '待确认' }[value] || value || '进行中';
+}
+function statusLabel(item, view) {
+    if (view === 'today')
+        return bucketLabel(item.bucket);
+    if (view === 'deals')
+        return ['high', 'critical'].includes(item.risk_level) ? '高风险' : item.funnel_stage || '交易';
+    if (view === 'actions')
+        return item.status === 'completed' ? '已完成' : item.status === 'blocked' ? '已阻塞' : '待跟进';
+    if (view === 'customers')
+        return item.priority || item.relationship_stage || '客户';
+    if (view === 'funnel')
+        return '漏斗阶段';
+    return item.channel || '业务活动';
+}
+function formatDate(value, includeTime = false) {
+    if (!value)
+        return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime()))
+        return String(value);
+    return new Intl.DateTimeFormat('zh-CN', includeTime ? { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' } : { month: 'numeric', day: 'numeric' }).format(date);
 }
 function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 }
+const productStyles = `
+  .dealpilot-route-panel{position:relative;z-index:1;width:auto;height:100%;min-height:0;padding:12px 10px 10px;color:#20242a;font:13px/1.4 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;display:flex;flex-direction:column;gap:12px;overflow:auto;background:transparent;border:0;box-shadow:none;letter-spacing:0}
+  .dealpilot-brand{display:flex;align-items:center;gap:9px;padding:2px}.dealpilot-mark{width:28px;height:28px;border-radius:6px;background:#1d2630;color:#fff;display:grid;place-items:center;font-weight:700}.dealpilot-brand strong{display:block;font-size:14px}.dealpilot-brand small{display:block;color:#818892;font-size:10px;margin-top:1px}
+  .dealpilot-workspace-row{padding:8px 2px;border-top:1px solid #e7e9ec;border-bottom:1px solid #e7e9ec}.dealpilot-workspace-row span{display:block;color:#8a9098;font-size:10px}.dealpilot-workspace-row strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:3px;font-size:12px}
+  .dealpilot-new,.dealpilot-change{width:100%;height:34px;border:0;border-radius:5px;cursor:pointer;font:inherit}.dealpilot-new{padding:0 10px;text-align:left;background:#1d67d6;color:#fff;font-weight:600}.dealpilot-new:disabled{opacity:.5}.dealpilot-section-label{color:#8b929b;font-size:10px;text-transform:uppercase;margin-top:2px}.dealpilot-sessions{display:flex;align-items:center;gap:7px;color:#5d6671;font-size:12px;padding:6px 4px}.dealpilot-session-dot{width:6px;height:6px;border-radius:50%;background:#bec4ca}.dealpilot-session-dot.active{background:#16835b}.dealpilot-change{margin-top:auto;text-align:left;padding:0 8px;background:transparent;color:#6b737d;font-size:11px}.dealpilot-change:hover{background:#f0f2f4}
+  .dealpilot-conversation-host{position:relative!important;box-sizing:border-box!important;padding-right:340px!important;transition:padding-right .18s ease}.dealpilot-context{position:absolute;z-index:30;right:0;top:0;bottom:0;width:340px;background:#fbfcfd;border-left:1px solid #e1e5e9;color:#22272e;font:13px/1.45 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:0}.dealpilot-context[hidden],.dealpilot-context-launcher[hidden],.dealpilot-workbench[hidden]{display:none!important}
+  .dealpilot-context-header{height:64px;padding:0 16px;border-bottom:1px solid #e4e7ea;display:flex;align-items:center;justify-content:space-between;background:#fff}.dealpilot-context-header strong{display:block;font-size:14px;margin-top:2px}.dealpilot-eyebrow{display:block;color:#868d96;font-size:10px;text-transform:uppercase}.dealpilot-icon-actions{display:flex;gap:5px}.dealpilot-icon-actions button{width:29px;height:29px;border:1px solid #dce1e6;border-radius:5px;background:#fff;color:#5d6671;font:17px/1 sans-serif;cursor:pointer}.dealpilot-icon-actions button:hover{border-color:#9ea7b1;color:#20262d}.dealpilot-context-scroll{height:calc(100% - 64px);overflow:auto;padding:0 16px 16px}.dealpilot-loading{padding:48px 16px;color:#7e858e;text-align:center}
+  .dealpilot-summary{display:grid;grid-template-columns:repeat(4,1fr);border-bottom:1px solid #e5e8eb;margin:0 -16px}.dealpilot-summary button{height:76px;border:0;border-right:1px solid #e5e8eb;background:#fff;cursor:pointer;text-align:center}.dealpilot-summary button:last-child{border-right:0}.dealpilot-summary b{display:block;font-size:20px;line-height:1.1}.dealpilot-summary span{display:block;color:#777f88;font-size:10px;margin-top:6px}.dealpilot-summary .tone-overdue b{color:#b42318}.dealpilot-summary .tone-today b{color:#1769a3}.dealpilot-summary .tone-risk b{color:#b65b13}.dealpilot-summary .tone-confirmation b{color:#6750a4}.dealpilot-summary button:hover{background:#f6f8fa}
+  .dealpilot-context-section{padding:17px 0;border-bottom:1px solid #e5e8eb}.dealpilot-section-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}.dealpilot-section-head strong{font-size:12px}.dealpilot-section-head button{border:0;background:none;color:#65707b;font:11px inherit;cursor:pointer}.dealpilot-section-head button:hover{color:#1769d2}
+  .dealpilot-priority-list{display:flex;flex-direction:column}.dealpilot-priority-list>button{display:grid;grid-template-columns:8px 1fr;gap:9px;align-items:start;border:0;border-radius:5px;background:transparent;text-align:left;padding:8px 5px;cursor:pointer}.dealpilot-priority-list>button:hover{background:#f0f3f6}.dealpilot-priority-list span{min-width:0}.dealpilot-priority-list strong{display:block;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dealpilot-priority-list small{display:block;color:#7b838c;font-size:10px;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tone-dot{display:block;width:7px;height:7px;border-radius:50%;background:#9ba3ac;margin-top:5px}.tone-dot.tone-overdue{background:#c93b31}.tone-dot.tone-risk{background:#d27224}.tone-dot.tone-today{background:#2d78a6}.tone-dot.tone-confirmation{background:#7357aa}.tone-dot.tone-done{background:#24815f}.dealpilot-activity-list{display:flex;flex-direction:column;gap:9px}.dealpilot-activity-list div{display:grid;grid-template-columns:58px 1fr;gap:8px}.dealpilot-activity-list span{color:#8a9199;font-size:10px}.dealpilot-activity-list strong{font-size:11px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dealpilot-quiet-state{padding:14px 4px;color:#8a9199;font-size:11px}
+  .dealpilot-open-workbench{width:100%;height:38px;margin-top:16px;padding:0 11px;display:flex;align-items:center;justify-content:space-between;border:1px solid #ccd3da;border-radius:5px;background:#fff;color:#27313a;font:12px inherit;font-weight:600;cursor:pointer}.dealpilot-open-workbench:hover{border-color:#74818d;background:#f7f9fa}.dealpilot-context-meta{display:flex;flex-wrap:wrap;gap:5px 10px;color:#9298a0;font-size:9px;padding:10px 2px}
+  .dealpilot-empty-state{text-align:center;padding:38px 18px}.dealpilot-empty-mark{display:grid;place-items:center;width:32px;height:32px;margin:0 auto 12px;border-radius:6px;background:#25313b;color:#fff;font-weight:700}.dealpilot-empty-state h3{font-size:14px;margin:0 0 6px}.dealpilot-empty-state p{color:#777f88;font-size:11px;margin:0 auto 16px;max-width:260px}.dealpilot-empty-actions{display:flex;flex-direction:column;gap:6px}.dealpilot-empty-actions button{min-height:34px;border:1px solid #dce1e5;border-radius:5px;background:#fff;color:#36404a;font:11px inherit;cursor:pointer}.dealpilot-empty-actions button:hover{border-color:#8aa4bd;background:#f5f8fa}
+  .dealpilot-context-launcher{position:absolute;z-index:29;right:10px;top:12px;height:34px;padding:0 10px;border:1px solid #d7dce1;border-radius:5px;background:#fff;color:#35404a;display:flex;align-items:center;gap:7px;font:11px Inter,sans-serif;cursor:pointer;box-shadow:0 2px 8px rgba(20,30,40,.08)}.dealpilot-context-launcher span{width:19px;height:19px;border-radius:4px;background:#25313b;color:#fff;display:grid;place-items:center;font-size:10px}.dealpilot-context-collapsed .dealpilot-conversation-host{padding-right:0!important}
+  .dealpilot-workbench{position:absolute;z-index:40;inset:0;background:#f7f8fa;color:#22272e;font:13px/1.45 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;overflow:hidden;letter-spacing:0}.dealpilot-workbench-open .dealpilot-conversation-host{padding-right:0!important}.dealpilot-workbench-header{height:78px;padding:0 24px;background:#fff;border-bottom:1px solid #e3e6e9;display:flex;align-items:center;justify-content:space-between}.dealpilot-workbench-header h2{display:inline-block;font-size:20px;line-height:1.2;margin:3px 0 0}.dealpilot-workbench-header p{display:inline-block;color:#7b838c;font-size:11px;margin:0 0 0 10px}
+  .dealpilot-tabs{height:44px;padding:0 24px;display:flex;gap:22px;background:#fff;border-bottom:1px solid #e3e6e9;overflow-x:auto}.dealpilot-tabs button{height:44px;flex:none;border:0;border-bottom:2px solid transparent;background:transparent;color:#68717b;font:12px inherit;cursor:pointer}.dealpilot-tabs button.active{border-bottom-color:#1f6dc8;color:#1d2630;font-weight:600}.dealpilot-workbench-content{height:calc(100% - 122px);padding:18px 24px 24px;overflow:auto}
+  .dealpilot-board-toolbar{display:grid;grid-template-columns:minmax(200px,1fr) 150px 120px;gap:8px;margin-bottom:14px}.dealpilot-search{height:36px;display:flex;align-items:center;gap:8px;padding:0 10px;border:1px solid #d9dee3;border-radius:5px;background:#fff;color:#7d858e}.dealpilot-search input{width:100%;border:0;outline:0;background:transparent;font:12px inherit;color:#2d343b}.dealpilot-board-toolbar select{height:36px;border:1px solid #d9dee3;border-radius:5px;background:#fff;padding:0 9px;color:#414a53;font:11px inherit}
+  .dealpilot-board-layout{display:grid;grid-template-columns:minmax(300px,.9fr) minmax(320px,1.1fr);min-height:420px;border:1px solid #e1e5e8;border-radius:6px;background:#fff;overflow:hidden}.dealpilot-board-list{padding:8px;min-width:0;border-right:1px solid #e5e8eb}.dealpilot-board-item{width:100%;min-height:58px;display:grid;grid-template-columns:8px 1fr 14px;gap:10px;align-items:center;border:0;border-bottom:1px solid #edf0f2;background:#fff;text-align:left;padding:10px 8px;cursor:pointer}.dealpilot-board-item:last-child{border-bottom:0}.dealpilot-board-item:hover,.dealpilot-board-item.selected{background:#f3f6f8}.dealpilot-board-item.selected{box-shadow:inset 2px 0 #246fbf}.dealpilot-board-item span{min-width:0}.dealpilot-board-item strong{display:block;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dealpilot-board-item small{display:block;color:#7a828b;font-size:10px;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dealpilot-row-arrow{color:#a3a9b0;font-size:18px}
+  .dealpilot-board-detail{min-width:0;padding:24px;overflow:auto}.dealpilot-detail-empty{height:100%;min-height:320px;display:grid;place-content:center;text-align:center;color:#8b929a}.dealpilot-detail-empty span{font-size:13px}.dealpilot-detail-empty p{font-size:11px;margin:5px 0}.dealpilot-detail-head{padding-bottom:18px;border-bottom:1px solid #e7eaed}.dealpilot-status-pill{display:inline-block;border-radius:4px;padding:3px 6px;background:#edf0f2;color:#5f6871;font-size:9px}.dealpilot-status-pill.tone-overdue{background:#fdeceb;color:#a82d24}.dealpilot-status-pill.tone-risk{background:#fff0e3;color:#a45111}.dealpilot-status-pill.tone-today{background:#eaf3f8;color:#236c95}.dealpilot-status-pill.tone-confirmation{background:#f0ecf8;color:#664e96}.dealpilot-status-pill.tone-done{background:#e8f5ef;color:#217456}.dealpilot-detail-head h3{font-size:19px;margin:9px 0 5px}.dealpilot-detail-head p{color:#747c85;font-size:11px;margin:0}
+  .dealpilot-board-detail dl{margin:18px 0}.dealpilot-board-detail dl div{display:grid;grid-template-columns:90px 1fr;padding:9px 0;border-bottom:1px solid #eef0f2}.dealpilot-board-detail dt{color:#8a9199;font-size:10px}.dealpilot-board-detail dd{margin:0;color:#343c44;font-size:11px}.dealpilot-detail-actions{display:flex;gap:7px;margin-top:18px}.dealpilot-detail-actions button{height:34px;padding:0 11px;border:1px solid #cfd6dc;border-radius:5px;background:#fff;color:#2e3943;font:11px inherit;cursor:pointer}.dealpilot-detail-actions button:first-child{background:#216bc1;border-color:#216bc1;color:#fff}
+  .dealpilot-funnel{margin-bottom:14px;padding:14px 16px;border:1px solid #e1e5e8;border-radius:6px;background:#fff}.dealpilot-funnel>.dealpilot-section-head span{color:#858d96;font-size:10px}.dealpilot-funnel>div:not(.dealpilot-section-head){display:grid;grid-template-columns:110px 1fr 28px;gap:10px;align-items:center;margin:9px 0;font-size:10px}.dealpilot-funnel i{height:7px;background:#edf0f2;border-radius:3px;overflow:hidden}.dealpilot-funnel i b{display:block;height:100%;background:#397d8e;border-radius:3px}.dealpilot-funnel>div>strong{text-align:right;font-size:11px}
+  .dealpilot-onboarding{position:fixed;z-index:2147482999;inset:0;background:rgba(244,246,247,.96);display:grid;place-items:center;padding:24px}.dealpilot-onboarding[hidden]{display:none}.dealpilot-onboarding-card{width:min(460px,100%);background:#fff;border:1px solid #dfe3e7;border-radius:8px;padding:30px;box-shadow:0 16px 45px rgba(18,28,38,.12)}.dealpilot-kicker{font-size:10px;color:#1f6dc8;font-weight:700}.dealpilot-onboarding h1{font-size:24px;margin:7px 0}.dealpilot-onboarding p{margin:0 0 18px;color:#69727b;font-size:12px;line-height:1.6}.dealpilot-setup-steps{display:grid;grid-template-columns:repeat(3,1fr);margin-bottom:20px;border-bottom:1px solid #e3e6e9}.dealpilot-setup-steps span{padding:7px 0;color:#9aa0a7;font-size:10px}.dealpilot-setup-steps span.active{color:#1f6dc8;border-bottom:2px solid #1f6dc8}.dealpilot-onboarding label{display:block;font-size:11px;color:#5f6871;margin-bottom:6px}.dealpilot-onboarding select{width:100%;height:40px;border:1px solid #d4dae0;border-radius:5px;padding:0 10px;background:#fff;font:12px inherit}.dealpilot-status{min-height:42px;padding:11px 0;color:#6e7680;font-size:11px;line-height:1.5}.dealpilot-status.error{color:#b42318}.dealpilot-onboarding-actions{display:flex;gap:8px}.dealpilot-onboarding-actions button{flex:1;height:38px;border:0;border-radius:5px;cursor:pointer;font:12px inherit;font-weight:600}.dealpilot-onboarding-card button[data-initialize]{background:#1f6dc8;color:#fff}.dealpilot-onboarding-card button[data-cancel-workspace]{background:#eef0f2;color:#59616a}
+  @media(max-width:1050px){.dealpilot-conversation-host{padding-right:300px!important}.dealpilot-context{width:300px}.dealpilot-workbench-header{padding:0 16px}.dealpilot-workbench-content,.dealpilot-tabs{padding-left:16px;padding-right:16px}.dealpilot-board-layout{grid-template-columns:minmax(240px,.85fr) minmax(270px,1.15fr)}}
+  @media(max-width:820px){.dealpilot-conversation-host{padding-right:0!important}.dealpilot-context{width:min(360px,100%);box-shadow:-8px 0 24px rgba(20,30,40,.12)}.dealpilot-board-layout{grid-template-columns:1fr}.dealpilot-board-list{border-right:0}.dealpilot-board-detail{border-top:1px solid #e5e8eb}.dealpilot-board-toolbar{grid-template-columns:1fr 130px}.dealpilot-board-toolbar select:last-child{display:none}}
+  @media(max-width:560px){.dealpilot-workbench-header{height:70px}.dealpilot-workbench-header p{display:none}.dealpilot-tabs{padding:0 12px;gap:16px}.dealpilot-workbench-content{height:calc(100% - 114px);padding:12px}.dealpilot-board-toolbar{grid-template-columns:1fr}.dealpilot-board-toolbar select:last-child{display:block}.dealpilot-board-layout{border-left:0;border-right:0;border-radius:0}.dealpilot-onboarding-card{padding:22px}}
+`;

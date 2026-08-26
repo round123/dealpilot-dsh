@@ -25,6 +25,15 @@
       - dealpilot_feedback_create / dealpilot_feedback_submit: create a redacted feedback draft and open a GitHub Issue only after confirmation.
       - dealpilot_whatsapp: read, analyze, or draft WhatsApp follow-up work.
 
+      Separate confirmed facts, reasonable inferences, and unknowns in your response. Cite the business object or
+      source reference when available. Ask for confirmation before writes, archival, state transitions, imports,
+      outbound messages, or any other high-impact operation. Do not claim an operation succeeded until its tool
+      result confirms it. Mutating DealPilot tools return a one-time confirmation_token; only call them again with
+      that exact token after the user explicitly approves the preview. A dealpilot_import_preview call returns
+      parsed records, duplicates, warnings, and estimated writes; present that preview once and wait for approval instead
+      of retrying different paths. Keep responses concise and oriented around
+      the next useful sales action.
+
 # Reuse Standard filesystem capabilities. The DSH session cwd is the selected Workspace,
 # and these tools are intentionally not given shell/network capabilities here.
 - id: tool-fs
@@ -35,15 +44,6 @@
 
 - id: skill-filesystem
   name: '@deepseek-ai/dsh-skill-filesystem'
-
-      Separate confirmed facts, reasonable inferences, and unknowns in your response. Cite the business object or
-      source reference when available. Ask for confirmation before writes, archival, state transitions, imports,
-      outbound messages, or any other high-impact operation. Do not claim an operation succeeded until its tool
-      result confirms it. Mutating DealPilot tools return a one-time confirmation_token; only call them again with
-      that exact token after the user explicitly approves the preview. A dealpilot_import_preview call returns
-      parsed records, duplicates, warnings, and estimated writes; present that preview once and wait for approval instead
-      of retrying different paths. Keep responses concise and oriented around
-      the next useful sales action.
 
 # Keep DealPilot's long-running follow-up work compatible with the DSH runtime.
 - id: tool-goal

@@ -311,12 +311,23 @@ function mountDealPilot(runtime: any) {
     const content = workbench.querySelector<HTMLElement>('[data-board-content]')!;
     content.innerHTML = `<section class="dealpilot-import-view">
       <div class="dealpilot-form-head"><span class="dealpilot-eyebrow">Import Center</span><h3>导入客户资料</h3><p>先预览记录和重复项，再回到对话确认写入。预览不会修改工作区。</p></div>
-      <div class="dealpilot-import-form"><label>格式<select data-import-format><option value="csv">CSV</option><option value="markdown">Markdown 表格</option><option value="text">纯文本列表</option></select></label><label>来源标签<input data-import-label placeholder="例如：2026 上海展会"></label></div>
+      <div class="dealpilot-import-form"><label>上传资料<input data-import-file type="file" accept=".csv,.md,.markdown,.txt,.xlsx,.xlsm"></label><label>格式<select data-import-format><option value="csv">CSV</option><option value="markdown">Markdown 表格</option><option value="text">纯文本列表</option></select></label><label>来源标签<input data-import-label placeholder="例如：2026 上海展会"></label></div>
       <textarea data-import-data rows="12" placeholder="粘贴客户资料，例如：\nAcme Corp\nBeta Ltd"></textarea>
       <div class="dealpilot-form-actions"><button data-import-preview type="button">生成导入预览</button><button data-import-to-chat type="button">在对话中确认导入</button></div>
       <div data-import-result class="dealpilot-import-result">等待预览</div>
     </section>`;
     const result = content.querySelector<HTMLElement>('[data-import-result]')!;
+    content.querySelector('[data-import-file]')?.addEventListener('change', async () => {
+      const file = (content.querySelector('[data-import-file]') as HTMLInputElement).files?.[0];
+      if (!file) return;
+      result.textContent = '正在上传资料...';
+      try {
+        const response = await fetch(`/api/dealpilot/artifacts?workspaceId=${encodeURIComponent(selectedId)}`, { method: 'POST', headers: { 'content-type': file.type || 'application/octet-stream', 'x-file-name': file.name }, body: file });
+        const artifact = await response.json(); if (!response.ok) throw new Error(artifact.error || '上传失败');
+        result.innerHTML = `<strong>已上传 ${escapeHtml(artifact.originalName)}</strong><span>Artifact ID: ${escapeHtml(artifact.id)}</span><button type="button" data-artifact-chat>在对话中预览</button>`;
+        result.querySelector('[data-artifact-chat]')?.addEventListener('click', () => sendToConversation(`请使用 artifact_id ${artifact.id} 调用 dealpilot_artifact_inspect 和 dealpilot_import_preview，展示解析结果，得到我确认后再调用 dealpilot_import_commit。`));
+      } catch (err: any) { result.textContent = err.message; }
+    });
     content.querySelector('[data-import-preview]')?.addEventListener('click', async () => {
       const data = content.querySelector<HTMLTextAreaElement>('[data-import-data]')!.value;
       const format = content.querySelector<HTMLSelectElement>('[data-import-format]')!.value;
@@ -330,7 +341,7 @@ function mountDealPilot(runtime: any) {
     content.querySelector('[data-import-to-chat]')?.addEventListener('click', () => {
       const data = content.querySelector<HTMLTextAreaElement>('[data-import-data]')!.value;
       const label = content.querySelector<HTMLInputElement>('[data-import-label]')!.value;
-      if (data.trim()) sendToConversation(`请预览并导入以下客户资料${label ? `（来源：${label}）` : ''}。先展示重复项和写入数量，得到我明确确认后再调用 dealpilot_import：\n\n${data}`);
+      if (data.trim()) sendToConversation(`请将我粘贴的资料作为当前 Artifact 进行预览${label ? `（来源：${label}）` : ''}，展示重复项和写入数量，得到我明确确认后再调用 dealpilot_import_commit。`);
     });
   };
 
@@ -625,7 +636,7 @@ function registerDealPilotToolViews(runtime: any): void {
   const React = (window as any).__dealpilotReact;
   if (!slots?.inject || !React?.createElement) return;
 
-  const keys = ['dealpilot_snapshot', 'dealpilot_search', 'dealpilot_write', 'dealpilot_action_transition', 'dealpilot_import'];
+  const keys = ['dealpilot_snapshot', 'dealpilot_search', 'dealpilot_write', 'dealpilot_action_transition', 'dealpilot_import_preview', 'dealpilot_import_commit'];
   slots.inject('tool.call.toolview', () => function* registerViews() {
     for (const key of keys) {
       yield slots.register({ name: 'tool.call.toolview', key, locale: 'dealpilot' }, (props: any) =>

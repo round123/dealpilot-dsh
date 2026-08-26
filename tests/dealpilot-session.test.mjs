@@ -12,7 +12,7 @@ test('DealPilot preset metadata and business rules are present', async () => {
   const composition = await readFile(path.join(root, 'plugin', 'agent-preset', 'dealpilot-sales', 'agent.cordis.yml'), 'utf8');
   assert.match(metadata, /id:\s*dealpilot-sales/);
   assert.match(metadata, /DealPilot 销售助理/);
-  for (const tool of ['dealpilot_snapshot', 'dealpilot_search', 'dealpilot_write', 'dealpilot_action_transition', 'dealpilot_import', 'dealpilot_whatsapp']) {
+  for (const tool of ['dealpilot_snapshot', 'dealpilot_search', 'dealpilot_write', 'dealpilot_action_transition', 'dealpilot_import_preview', 'dealpilot_import_commit', 'dealpilot_whatsapp']) {
     assert.match(composition, new RegExp(tool));
   }
   assert.match(composition, /absolute filesystem path/);

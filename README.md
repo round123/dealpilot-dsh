@@ -98,11 +98,13 @@ DealPilot 页面由原生 DSH Conversation/Composer 加上产品业务视图组�
 | `dealpilot_snapshot` | 读取 Today、客户、交易、漏斗、行动和活动快照 |
 | `dealpilot_write` | 创建、更新、归档 Customer/Deal/Action；支持 Customer 合并 |
 | `dealpilot_action_transition` | 完成、取消、阻塞、重开或安排 Action |
-| `dealpilot_import` | 预览、去重并导入 `sources/inbox/` 中的资料 |
+| `dealpilot_artifact_*` | 上传资料、检查元数据和 XLSX 工作表，不暴露本地路径 |
+| `dealpilot_import_preview` / `dealpilot_import_commit` | 对 Artifact 预览、去重并在确认后导入 CSV、Markdown、纯文本或 XLSX |
+| `dealpilot_feedback_*` | 生成脱敏反馈草稿，并在确认后打开 GitHub Issue |
 | `dealpilot_search` | 按名称模糊搜索，并按市场、阶段、风险等字段筛选 |
 | `dealpilot_whatsapp` | 保留工具协议；Chrome 扩展实际闭环暂未包含 |
 
-所有业务工具都从当前 DealPilot session 读取 Workspace。客户端不能传入任意绝对路径；没有绑定 Workspace 时，工具会返回“请先选择 DealPilot Workspace”。高影响操作必须使用一次性确认 token，系统不会自动发送外部消息。
+所有业务工具都从当前 DealPilot session 读取 Workspace。客户端不能传入任意绝对路径；文件先进入当前 Workspace 的 Artifact 存储，再由导入工具读取。没有绑定 Workspace 时，工具会返回“请先选择 DealPilot Workspace”。高影响操作必须使用一次性确认 token，系统不会自动发送外部消息。
 
 ## Workspace 数据
 

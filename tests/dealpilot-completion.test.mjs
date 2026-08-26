@@ -185,43 +185,6 @@ test('Import preview is read-only and reports duplicate records', async () => {
   }
 });
 
-test('Import tool confirmation includes parsed records and duplicate estimates', async () => {
-  const workspace = await mkdtemp(path.join(os.tmpdir(), 'dealpilot-import-confirmation-preview-'));
-  const workspaceId = `import-preview-${Date.now()}`;
-  const sessionId = `import-preview-session-${Date.now()}`;
-  try {
-    const manager = await import('../plugin/lib/workspace-manager.js');
-    await manager.ensureWorkspace(workspace);
-    manager.registerWorkspacePath(workspaceId, workspace);
-    const { writeYamlFrontmatter } = await import('../plugin/lib/okf-utils.js');
-    await writeYamlFrontmatter(path.join(workspace, 'knowledge/customers/acme.md'), { title: 'Acme Corp', status: 'active' }, '# Profile');
-    const sessions = await import('../plugin/lib/dealpilot-session.js');
-    await sessions.createDealPilotSession(workspaceId, sessionId);
-    const { apply } = await import('../plugin/lib/index.js');
-    const registered = [];
-    apply({ tools: { register: tool => registered.push(tool) } });
-    const importer = registered.find(tool => tool.name === 'dealpilot_import');
-    const preview = await importer.execute({
-      data: 'title,market\nAcme Corp,DE\nNew GmbH,DE',
-      format: 'csv',
-      auto_dedup: true,
-    }, { agent: { id: sessionId } });
-    assert.equal(preview.requires_confirmation, true);
-    assert.equal(preview.preview.total, 2);
-    assert.equal(preview.preview.estimated_create, 1);
-    assert.equal(preview.preview.duplicate_count, 1);
-    assert.deepEqual(preview.preview.duplicates.map(item => item.title), ['Acme Corp']);
-    assert.deepEqual(preview.preview.records.map(item => item.title), ['Acme Corp', 'New GmbH']);
-    const rendered = importer.output.render({}, preview);
-    assert.match(rendered[0].text, new RegExp(`confirmation_token: ${preview.confirmation_token}`));
-    assert.match(rendered[0].text, /estimated_create/);
-  } finally {
-    const sessions = await import('../plugin/lib/dealpilot-session.js');
-    sessions.removeDealPilotSession(sessionId);
-    await rm(workspace, { recursive: true, force: true });
-  }
-});
-
 test('Snapshot validation is read-only for a partial workspace', async () => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), 'dealpilot-readonly-snapshot-'));
   try {
@@ -275,7 +238,6 @@ test('Mutating tools require an explicit confirmation token before changing OKF'
     apply({ tools: { register: tool => registered.push(tool) } });
     const write = registered.find(tool => tool.name === 'dealpilot_write');
     const action = registered.find(tool => tool.name === 'dealpilot_action_transition');
-    const importer = registered.find(tool => tool.name === 'dealpilot_import');
     const execute = (tool, args) => tool.execute(args, { agent: { id: sessionId } });
 
     const customerArgs = { operation: 'create', entity: 'customer', fields: { title: 'Confirmed Customer', market: 'DE' } };
@@ -303,18 +265,6 @@ test('Mutating tools require an explicit confirmation token before changing OKF'
     const transitioned = await execute(action, { ...transitionArgs, confirmation_token: transitionPreview.confirmation_token });
     assert.equal(transitioned.newStatus, 'done');
 
-    const importArgs = { data: 'Imported Customer\n', format: 'text' };
-    const importPreview = await execute(importer, importArgs);
-    assert.equal(importPreview.requires_confirmation, true);
-    const imported = await execute(importer, { ...importArgs, confirmation_token: importPreview.confirmation_token });
-    assert.equal(imported.created, 1);
-
-    const { writeFile } = await import('node:fs/promises');
-    await writeFile(path.join(workspace, 'sources', 'inbox', 'leads.txt'), 'Inbox Customer\n', 'utf8');
-    const inboxPreview = await execute(importer, { source_path: 'sources/inbox/leads.txt' });
-    assert.equal(inboxPreview.requires_confirmation, true);
-    const inboxImported = await execute(importer, { source_path: 'sources/inbox/leads.txt', confirmation_token: inboxPreview.confirmation_token });
-    assert.equal(inboxImported.created, 1);
   } finally {
     const sessions = await import('../plugin/lib/dealpilot-session.js');
     sessions.removeDealPilotSession(sessionId);

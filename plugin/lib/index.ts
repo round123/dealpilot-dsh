@@ -11,10 +11,11 @@ import { ensureWorkspace, listWorkspaces, inspectWorkspace, workspacePathFromId,
 import { registerSnapshotTool } from './snapshot.js';
 import { registerWriteTool } from './write-tool.js';
 import { registerActionTool } from './action-tool.js';
-import { registerImportTool } from './import-tool.js';
 import { previewImport } from './import-tool.js';
 import { registerSearchTool } from './search-tool.js';
 import { registerWhatsappTool } from './whatsapp-tool.js';
+import { registerArtifactTools, stageUploadedArtifact, listArtifacts, getArtifact, deleteArtifact } from './artifact-tool.js';
+import { registerFeedbackTools } from './feedback-tool.js';
 import { createToolHarness } from './tool-compat.js';
 import { readGoalRuntime } from './goal-runtime.js';
 import {
@@ -106,10 +107,11 @@ export function apply(ctx: Record<string, any>) {
     registerSnapshotTool(toolCtx, harness);
     registerWriteTool(toolCtx, harness);
     registerActionTool(toolCtx, harness);
-    registerImportTool(toolCtx, harness);
     registerSearchTool(toolCtx, harness);
     registerWhatsappTool(toolCtx, harness);
-    console.log('[dealpilot] registered 6 business tools');
+    registerArtifactTools(toolCtx, harness);
+    registerFeedbackTools(toolCtx, harness);
+    console.log('[dealpilot] registered DealPilot business and artifact tools');
   } else {
     console.warn('[dealpilot] tools service not available — tools not registered');
   }
@@ -126,6 +128,21 @@ export function apply(ctx: Record<string, any>) {
       if (req.method !== 'POST') return {};
       let raw = ''; for await (const chunk of req) raw += chunk;
       try { return raw ? JSON.parse(raw) : {}; } catch { throw new Error('Invalid JSON request body'); }
+    };
+    const rawBody = async (req: any, max = 20 * 1024 * 1024): Promise<Buffer> => {
+      const chunks: Buffer[] = []; let size = 0;
+      for await (const chunk of req) { const part = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk); size += part.length; if (size > max) throw new Error('文件超过 20 MB 大小限制'); chunks.push(part); }
+      return Buffer.concat(chunks);
+    };
+    const multipart = (contentType: string, bytes: Buffer): { name: string; mediaType: string; data: Buffer } => {
+      const match = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType || '');
+      if (!match) throw new Error('multipart 请求缺少 boundary');
+      const boundary = Buffer.from(`--${match[1] || match[2]}`); const start = bytes.indexOf(boundary); if (start < 0) throw new Error('multipart 文件字段不存在');
+      const headerStart = start + boundary.length + 2; const headerEnd = bytes.indexOf(Buffer.from('\r\n\r\n'), headerStart); if (headerEnd < 0) throw new Error('multipart 头部无效');
+      const headers = bytes.slice(headerStart, headerEnd).toString('utf8'); const disposition = /name="([^"]+)"(?:;\s*filename="([^"]+)")?/i.exec(headers); if (!disposition?.[2]) throw new Error('multipart 需要 filename');
+      const dataStart = headerEnd + 4; const dataEnd = bytes.indexOf(Buffer.from('\r\n'), dataStart); const endBoundary = bytes.indexOf(boundary, dataStart); const end = endBoundary > 0 ? endBoundary - 2 : bytes.length;
+      const type = /content-type:\s*([^\r\n]+)/i.exec(headers)?.[1] || 'application/octet-stream';
+      return { name: disposition[2], mediaType: type.trim(), data: bytes.slice(dataStart, end) };
     };
 
     webServer.register({
@@ -229,6 +246,36 @@ export function apply(ctx: Record<string, any>) {
           const data = typeof input.data === 'string' ? input.data : '';
           const format = ['csv', 'markdown', 'text'].includes(input.format) ? input.format : 'text';
           json(res, 200, await previewImport(workspace, data, format, input.autoDedup !== false));
+        } catch (err: any) { json(res, 400, { error: err.message }); }
+      },
+    });
+    webServer.register({
+      kind: 'exact', path: '/api/dealpilot/artifacts',
+      handler: async (req: any, res: any) => {
+        try {
+          await syncDshWorkspaceRegistry(req);
+          const url = new URL(req.url || '/', 'http://dealpilot.local');
+          const workspaceId = url.searchParams.get('workspaceId') || '';
+          const workspace = workspacePathFromId(workspaceId);
+          if (!workspace) return json(res, 400, { error: 'Invalid workspaceId' });
+          if (req.method === 'GET') return json(res, 200, { artifacts: await listArtifacts(workspace) });
+          if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' });
+          const contentType = String(req.headers?.['content-type'] || ''); const bytes = await rawBody(req);
+          const uploaded = contentType.toLowerCase().startsWith('multipart/') ? multipart(contentType, bytes) : { name: String(req.headers?.['x-file-name'] || 'upload.bin'), mediaType: contentType, data: bytes };
+          return json(res, 201, await stageUploadedArtifact(workspace, workspaceId, uploaded.name, uploaded.mediaType, uploaded.data));
+        } catch (err: any) { json(res, 400, { error: err.message }); }
+      },
+    });
+    webServer.register({
+      kind: 'prefix', path: '/api/dealpilot/artifacts/',
+      handler: async (req: any, res: any) => {
+        try {
+          const parts = new URL(req.url || '/', 'http://dealpilot.local').pathname.split('/').filter(Boolean); const id = parts[parts.length - 1];
+          await syncDshWorkspaceRegistry(req); const url = new URL(req.url || '/', 'http://dealpilot.local'); const workspace = workspacePathFromId(url.searchParams.get('workspaceId') || '');
+          if (!workspace) return json(res, 400, { error: 'Invalid workspaceId' });
+          if (req.method === 'GET') { const item = await getArtifact(workspace, id); return item ? json(res, 200, item) : json(res, 404, { error: 'Artifact not found' }); }
+          if (req.method === 'DELETE') { await deleteArtifact(workspace, id); return json(res, 200, { ok: true }); }
+          return json(res, 405, { error: 'Method not allowed' });
         } catch (err: any) { json(res, 400, { error: err.message }); }
       },
     });

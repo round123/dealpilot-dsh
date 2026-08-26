@@ -11,9 +11,14 @@ const expectedTools = [
   'dealpilot_snapshot',
   'dealpilot_write',
   'dealpilot_action_transition',
-  'dealpilot_import',
   'dealpilot_search',
   'dealpilot_whatsapp',
+  'dealpilot_artifact_list',
+  'dealpilot_artifact_inspect',
+  'dealpilot_import_preview',
+  'dealpilot_import_commit',
+  'dealpilot_feedback_create',
+  'dealpilot_feedback_submit',
 ];
 
 const snapshot = {

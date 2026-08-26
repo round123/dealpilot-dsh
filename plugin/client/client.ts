@@ -414,6 +414,22 @@ function mountDealPilot(runtime: any) {
     document.body.classList.add('dealpilot-workbench-open');
     renderBoard(view);
   };
+  const importExtensions = /\.(xlsx|xlsm|csv|md|markdown|txt)$/i;
+  const droppedImportFile = (event: DragEvent) => Array.from(event.dataTransfer?.files || []).find(file => importExtensions.test(file.name));
+  document.addEventListener('dragover', event => {
+    if (!droppedImportFile(event)) return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+  }, true);
+  document.addEventListener('drop', event => {
+    const file = droppedImportFile(event); if (!file) return;
+    event.preventDefault(); event.stopImmediatePropagation(); openWorkbench('import');
+    requestAnimationFrame(() => {
+      const input = workbench.querySelector<HTMLInputElement>('[data-import-file]'); if (!input) return;
+      const transfer = new DataTransfer(); transfer.items.add(file); input.files = transfer.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+  }, true);
   function closeWorkbench() {
     workbench.hidden = true;
     document.body.classList.remove('dealpilot-workbench-open');

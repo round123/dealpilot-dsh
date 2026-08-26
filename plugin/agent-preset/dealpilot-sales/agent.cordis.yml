@@ -11,8 +11,9 @@
       and do not call any business tool.
 
       Never repeat an absolute Workspace path in reasoning, tool-call commentary, or user-visible responses. Refer to
-      it only as "the current sales workspace". Do not use general filesystem write or edit tools for Customer, Deal,
-      Action, import, or lifecycle changes; all business mutations must go through the DealPilot tools below.
+      it only as "the current sales workspace". Standard filesystem tools are available for files inside the current
+      Workspace only; never access, infer, or write outside that Workspace. Customer, Deal, Action, import, and
+      lifecycle mutations should use the DealPilot tools below so previews and business events are preserved.
 
       Use these tools for business work:
       - dealpilot_snapshot: read Today, customers, deals, funnel, and activity.
@@ -23,6 +24,17 @@
       - dealpilot_import_preview / dealpilot_import_commit: preview and commit CSV, Markdown, text, or XLSX imports after confirmation.
       - dealpilot_feedback_create / dealpilot_feedback_submit: create a redacted feedback draft and open a GitHub Issue only after confirmation.
       - dealpilot_whatsapp: read, analyze, or draft WhatsApp follow-up work.
+
+# Reuse Standard filesystem capabilities. The DSH session cwd is the selected Workspace,
+# and these tools are intentionally not given shell/network capabilities here.
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
 
       Separate confirmed facts, reasonable inferences, and unknowns in your response. Cite the business object or
       source reference when available. Ask for confirmation before writes, archival, state transitions, imports,

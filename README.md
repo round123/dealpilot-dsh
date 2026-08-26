@@ -21,10 +21,25 @@ DealPilot 不替换 DSH 默认页面，也不需要用户手动编辑本地目�
 
 ### 安装插件
 
-从 GitHub Release 下载压缩包并解压为一个插件目录，然后在 DSH web profile 中安装：
+推荐直接让 DSH profile 从 GitHub 安装 `dist` 分支。这样 pnpm 会在 profile 中解析并安装插件的生产依赖：
 
 ```powershell
-dsh plugin --profile web add D:\path\to\dealpilot-dsh
+dsh plugin --profile web add github:round123/dealpilot-dsh#dist
+```
+
+如果使用 GitHub Release 下载的压缩包，先在解压后的插件目录安装生产依赖，再执行本地 link。`dsh plugin add` 对本地目录只创建 link，不会替插件目录安装 `node_modules`：
+
+```powershell
+cd D:\path\to\dealpilot-dsh
+pnpm install --prod --frozen-lockfile
+dsh plugin --profile web add .
+```
+
+如果你的 pnpm 使用了企业镜像或供应链白名单，并且锁文件中的地址不被允许，可以让 pnpm 按当前配置重新解析一次：
+
+```powershell
+pnpm install --prod --no-frozen-lockfile --registry=<你环境允许的 registry>
+dsh plugin --profile web add .
 ```
 
 本地开发也可以直接使用仓库目录：

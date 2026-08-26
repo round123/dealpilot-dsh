@@ -35,6 +35,16 @@ jobs:
         run: pnpm exec tsc
         working-directory: plugin
 
+      - name: Verify clean plugin install
+        shell: bash
+        run: |
+          verify_dir="$RUNNER_TEMP/dealpilot-dsh-install-check"
+          mkdir -p "$verify_dir/lib"
+          cp plugin/package.json plugin/pnpm-lock.yaml plugin/.npmrc "$verify_dir/"
+          cp plugin/lib/okf-utils.js plugin/lib/workspace-manager.js plugin/lib/workspace-context.js "$verify_dir/lib/"
+          pnpm install --prod --frozen-lockfile --ignore-scripts --dir "$verify_dir"
+          (cd "$verify_dir" && node --input-type=module -e "import('./lib/okf-utils.js').then(() => console.log('standalone plugin import OK'))")
+
       - name: Run tests
         run: node --test tests/*.test.mjs
 
@@ -45,6 +55,7 @@ jobs:
           mkdir -p "$dist_dir/lib" "$dist_dir/client"
 
           cp plugin/package.json "$dist_dir/"
+          cp plugin/.npmrc "$dist_dir/"
           cp plugin/cordis.patch.yml "$dist_dir/"
           cp plugin/pnpm-lock.yaml "$dist_dir/"
           cp README.md "$dist_dir/"
@@ -78,6 +89,6 @@ jobs:
           git rm -rf .
           cp -R "$RUNNER_TEMP/dealpilot-dsh/." .
 
-          git add README.md package.json pnpm-lock.yaml cordis.patch.yml lib client agent-preset
+          git add README.md package.json .npmrc pnpm-lock.yaml cordis.patch.yml lib client agent-preset
           git commit -m "build: ${GITHUB_SHA}"
           git push -f origin HEAD:dist

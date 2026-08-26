@@ -161,6 +161,12 @@ git diff --check
 
 ## 发布
 
+推送后可使用以下脚本确认构建；如果 GitHub 没有创建对应的 push run，脚本会自动触发 `workflow_dispatch`：
+
+```powershell
+.\scripts\trigger-build.ps1
+```
+
 推送到 `master` 会触发 `.github/workflows/build.yml`：
 
 1. 安装依赖并编译 TypeScript。

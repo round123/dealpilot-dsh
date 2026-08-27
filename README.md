@@ -25,6 +25,8 @@ DealPilot 不替换 DSH 默认页面，也不需要用户手动编辑本地目�
 
 ```powershell
 dsh plugin --profile web add github:round123/dealpilot-dsh#dist
+# 通用文件拖拽、粘贴和文档读取（推荐）
+dsh plugin --profile web add dsh-file-upload
 ```
 
 如果使用 GitHub Release 下载的压缩包，先在解压后的插件目录安装生产依赖，再执行本地 link。`dsh plugin add` 对本地目录只创建 link，不会替插件目录安装 `node_modules`：
@@ -56,6 +58,10 @@ dsh plugin --profile web add .
 ```powershell
 dsh web --no-open
 ```
+
+通用文件上传由 `dsh-file-upload` 提供。它会把文件放入当前 session 的 Workspace
+下并提供 `read_document`；DealPilot 不再拦截全局拖拽事件。客户资料导入仍在导入中心
+通过 Artifact 预览、去重和确认写入。
 
 打开：
 

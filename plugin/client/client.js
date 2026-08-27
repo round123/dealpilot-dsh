@@ -365,7 +365,6 @@ function mountDealPilot(runtime) {
         content.innerHTML = `<section class="dealpilot-import-view">
       <div class="dealpilot-form-head"><span class="dealpilot-eyebrow">Import Center</span><h3>导入客户资料</h3><p>先预览记录和重复项，再回到对话确认写入。预览不会修改工作区。</p></div>
       <div class="dealpilot-import-form"><label class="dealpilot-upload-button">选择文件<input data-import-file type="file" accept=".csv,.md,.markdown,.txt,.xlsx,.xlsm"></label><label>格式<select data-import-format><option value="csv">CSV</option><option value="markdown">Markdown 表格</option><option value="text">纯文本列表</option></select></label><label>来源标签<input data-import-label placeholder="例如：2026 上海展会"></label></div>
-      <div data-import-drop class="dealpilot-import-drop">将 Excel、CSV、Markdown 或文本文件拖到这里，或点击“选择文件”</div>
       <textarea data-import-data rows="12" placeholder="粘贴客户资料，例如：\nAcme Corp\nBeta Ltd"></textarea>
       <div class="dealpilot-form-actions"><button data-import-preview type="button">生成导入预览</button><button data-import-to-chat type="button">在对话中确认导入</button></div>
       <div data-import-result class="dealpilot-import-result">等待预览</div>
@@ -391,10 +390,6 @@ function mountDealPilot(runtime) {
                 return;
             await upload(file);
         });
-        const drop = content.querySelector('[data-import-drop]');
-        drop.addEventListener('dragover', event => { event.preventDefault(); drop.classList.add('is-dragging'); });
-        drop.addEventListener('dragleave', () => drop.classList.remove('is-dragging'));
-        drop.addEventListener('drop', async event => { event.preventDefault(); drop.classList.remove('is-dragging'); const file = event.dataTransfer?.files?.[0]; if (file) await upload(file); });
         content.querySelector('[data-import-preview]')?.addEventListener('click', async () => {
             const data = content.querySelector('[data-import-data]').value;
             const format = content.querySelector('[data-import-format]').value;
@@ -498,44 +493,6 @@ function mountDealPilot(runtime) {
         document.body.classList.add('dealpilot-workbench-open');
         renderBoard(view);
     };
-    const importExtensions = /\.(xlsx|xlsm|csv|md|markdown|txt)$/i;
-    const droppedImportFile = (event) => {
-        const files = Array.from(event.dataTransfer?.files || []);
-        const match = files.find(file => importExtensions.test(file.name));
-        if (match)
-            return match;
-        // During dragover Chromium may expose only DataTransferItem metadata;
-        // treat file items as candidates and inspect their names on drop.
-        const item = Array.from(event.dataTransfer?.items || []).find(item => item.kind === 'file');
-        const file = item?.getAsFile?.();
-        return file && importExtensions.test(file.name) ? file : undefined;
-    };
-    const isImportDrag = (event) => Boolean(droppedImportFile(event) || Array.from(event.dataTransfer?.items || []).some(item => item.kind === 'file'));
-    document.addEventListener('dragover', event => {
-        if (!isImportDrag(event))
-            return;
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        if (event.dataTransfer)
-            event.dataTransfer.dropEffect = 'copy';
-    }, true);
-    document.addEventListener('drop', event => {
-        const file = droppedImportFile(event);
-        if (!file)
-            return;
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        openWorkbench('import');
-        requestAnimationFrame(() => {
-            const input = workbench.querySelector('[data-import-file]');
-            if (!input)
-                return;
-            const transfer = new DataTransfer();
-            transfer.items.add(file);
-            input.files = transfer.files;
-            input.dispatchEvent(new Event('change', { bubbles: true }));
-        });
-    }, true);
     function closeWorkbench() {
         workbench.hidden = true;
         document.body.classList.remove('dealpilot-workbench-open');

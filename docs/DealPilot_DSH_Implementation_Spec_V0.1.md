@@ -109,6 +109,8 @@ description: AI-native 销售工作空间：客户管理、交易跟踪、行动
 
 - id: tool-fs-search
   name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
 
 # ── jobs ──
 - id: tool-jobs

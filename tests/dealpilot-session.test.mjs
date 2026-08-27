@@ -19,6 +19,7 @@ test('DealPilot preset metadata and business rules are present', async () => {
   assert.match(composition, /reasoning, tool-call commentary/);
   assert.match(composition, /parsed records, duplicates, warnings, and estimated writes/);
   assert.match(composition, /confirmation/i);
+  assert.match(composition, /sampleOverCapGlobResults:\s*false/);
 });
 
 test('business tools require a bound DealPilot session and use its workspace', async () => {

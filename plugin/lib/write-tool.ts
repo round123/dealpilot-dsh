@@ -3,6 +3,7 @@
 
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import {
   readYamlFrontmatter,
   writeYamlFrontmatter,
@@ -22,14 +23,21 @@ import { writePresentation } from './business-view.js';
 // ── Types ────────────────────────────────────────────────────────────────────
 
 type EntityType = 'customer' | 'deal' | 'action';
-type Operation = 'create' | 'update' | 'archive' | 'merge';
+type Operation = 'create' | 'update' | 'append' | 'archive' | 'merge';
 
 interface WriteToolArgs {
   operation: Operation;
-  entity: EntityType;
+  entity?: EntityType;
+  kind?: string;
   ref?: string;
   source_ref?: string;
-  fields: Record<string, any>;
+  fields?: Record<string, any>;
+  body?: string;
+  content?: unknown;
+  metadata?: Record<string, any>;
+  evidence?: Array<Record<string, any>>;
+  rationale?: string;
+  uncertainty?: string;
   confirmation_token?: string;
 }
 
@@ -58,9 +66,10 @@ export function registerWriteTool(ctx: Record<string, any>, harness: any): void 
 
 支持文档创建、更新、正文追加、归档和关系维护。稳定元数据只用于索引和安全校验，fields 中的开放式内容会被保留并写入文档。
 
-支持三种操作：
+支持以下操作：
 - create: 创建新对象（不需要 ref）
 - update: 更新已有对象（需要 ref）
+- append: 追加正文到已有文档（需要 ref）
 - archive: 归档对象（设置 status: archived）
 - merge: 合并两个同类对象（当前支持 customer；需要 ref 作为保留对象、source_ref 作为来源对象）
 
@@ -71,17 +80,24 @@ export function registerWriteTool(ctx: Record<string, any>, harness: any): void 
     parameters: {
       type: 'object',
       properties: {
-        operation: { type: 'string', enum: ['create', 'update', 'archive', 'merge'] },
+        operation: { type: 'string', enum: ['create', 'update', 'append', 'archive', 'merge'] },
         entity: { type: 'string', enum: ['customer', 'deal', 'action'] },
+        kind: { type: 'string', description: '开放式文档类型；未提供 entity 时使用，例如 note、account 或任意工作记忆分类' },
         ref: { type: 'string', description: '目标对象引用路径（update/archive 时必需）' },
         source_ref: { type: 'string', description: '合并来源对象引用路径（merge 时必需；必须与 ref 同为 customer）' },
         fields: {
           type: 'object',
           description: 'Agent 根据当前证据形成的开放式内容；可包含正文区、扩展元数据和关系信息',
         },
+        body: { type: 'string', description: '通用文档正文；可与 content 互换使用' },
+        content: { type: 'object', additionalProperties: true, description: '通用文档内容；可以是结构化对象或带 format/value 的内容包装' },
+        metadata: { type: 'object', description: '开放式元数据，不限业务字段' },
+        evidence: { type: 'array', items: { type: 'object', additionalProperties: true }, description: '来源证据引用' },
+        rationale: { type: 'string', description: '本次写入的原因' },
+        uncertainty: { type: 'string', description: '尚未确定的部分' },
         confirmation_token: { type: 'string', description: '用户确认预览后返回的一次性确认令牌' },
       },
-      required: ['operation', 'entity', 'fields'],
+      required: ['operation'],
     },
     output: {
       schema: { type: 'object' },
@@ -102,6 +118,7 @@ export function registerWriteTool(ctx: Record<string, any>, harness: any): void 
         throw new Error('No workspace configured. Set defaultWorkspace in agent preset.');
       }
 
+      if (!args.entity) return JSON.stringify(await executeGenericWrite(workspace, args));
       const { operation, entity, ref, source_ref, fields, confirmation_token } = args;
       const normalizedFields = await normalizeRelationshipFields(workspace, entity, fields || {});
       const safeRef = ref ? normalizeRef(workspace, `knowledge/${entity}s/index.md`, ref) : undefined;
@@ -138,6 +155,9 @@ export function registerWriteTool(ctx: Record<string, any>, harness: any): void 
       } else if (operation === 'update') {
         if (!ref) throw new Error('update 操作需要 ref 参数');
         return JSON.stringify(await updateEntity(workspace, entity, safeRef!, normalizedFields, now));
+      } else if (operation === 'append') {
+        if (!ref) throw new Error('append 操作需要 ref 参数');
+        return JSON.stringify(await appendEntityBody(workspace, entity, safeRef!, fields || {}, now));
       } else if (operation === 'archive') {
         if (!ref) throw new Error('archive 操作需要 ref 参数');
         return JSON.stringify(await archiveEntity(workspace, entity, safeRef!, now));
@@ -485,6 +505,97 @@ async function updateEntity(
   if (entity === 'action') await syncGoalRuntime(workspace, new Date(now));
 
   return { ok: true, ref, updatedFields: changedKeys };
+}
+
+async function appendEntityBody(
+  workspace: string,
+  entity: EntityType,
+  ref: string,
+  fields: Record<string, any>,
+  now: string,
+): Promise<WriteResult> {
+  const filePath = path.join(workspace, ref);
+  const current = await readYamlFrontmatter(filePath).catch(() => { throw new Error(`无法读取业务对象：${ref}`); });
+  const addition = fields.body ?? fields.content ?? '';
+  if (!String(addition).trim()) throw new Error('append 操作需要 body 或 content');
+  const body = `${current.body.trimEnd()}\n\n${String(addition).trim()}\n`;
+  const updated: Record<string, any> = { ...current.meta, generated: { ...(current.meta.generated || {}), at: now } };
+  await writeYamlFrontmatter(filePath, updated, body);
+  const event: BusinessEvent = { occurred_at: now, event_type: `${entity}.updated`, channel: 'chat', generated_by: 'dealpilot-dsh', summary: 'body appended' };
+  if (entity === 'customer') event.customer_ref = ref;
+  if (entity === 'deal') event.deal_ref = ref;
+  if (entity === 'action') { event.action_ref = ref; event.deal_ref = updated.deal; }
+  await appendBusinessEvent(workspace, event);
+  await updateStorageIndex(workspace, entity, { ref, ...updated, updated_at: now });
+  return { ok: true, ref, updatedFields: ['body'] };
+}
+
+function genericKind(value: unknown): string {
+  const normalized = String(value || 'note').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-|-$/g, '');
+  return normalized || 'note';
+}
+
+function safeWorkspaceRef(workspace: string, value: string): string {
+  if (!value || path.isAbsolute(value) || value.includes('..')) throw new Error('引用必须位于当前 Workspace');
+  const resolved = path.resolve(workspace, value);
+  const relative = path.relative(workspace, resolved);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('引用必须位于当前 Workspace');
+  return relative.replaceAll('\\', '/');
+}
+
+function genericContext(args: WriteToolArgs): string {
+  const lines: string[] = [];
+  if (args.rationale) lines.push(`Rationale: ${args.rationale}`);
+  if (args.uncertainty) lines.push(`Uncertainty: ${args.uncertainty}`);
+  if (Array.isArray(args.evidence) && args.evidence.length) lines.push('Evidence:', ...args.evidence.map(item => `- ${JSON.stringify(item)}`));
+  return lines.length ? `\n\n## Agent context\n\n${lines.join('\n')}\n` : '';
+}
+
+function genericContent(value: unknown): string {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'object') {
+    const wrapped = value as any;
+    return JSON.stringify(wrapped.format && 'value' in wrapped ? wrapped.value : wrapped, null, 2);
+  }
+  return String(value);
+}
+
+async function executeGenericWrite(workspace: string, args: WriteToolArgs): Promise<any> {
+  const operation = args.operation;
+  if (!['create', 'update', 'append'].includes(operation)) throw new Error('通用写入仅支持 create、update 和 append；归档或合并请提供 entity');
+  for (const evidence of Array.isArray(args.evidence) ? args.evidence : []) {
+    const sourceRef = evidence?.sourceRef || evidence?.source_ref;
+    if (typeof sourceRef !== 'string') throw new Error('证据必须包含 sourceRef');
+    safeWorkspaceRef(workspace, sourceRef);
+  }
+  const kind = genericKind(args.kind);
+  const fields = { ...(args.fields || {}) };
+  const title = String(fields.title || (args as any).title || kind).trim();
+  const ref = args.ref ? normalizeRef(workspace, `knowledge/${kind}s/index.md`, args.ref) : operation === 'create' ? generateRef(kind, title) : undefined;
+  if (!ref) throw new Error(`${operation} 操作需要 ref 参数`);
+  const explicitTitle = Boolean(fields.title || (args as any).title);
+  const metadata = { ...(args.metadata || {}), ...Object.fromEntries(Object.entries(fields).filter(([key]) => !['title', 'body', 'content'].includes(key))), ...((operation !== 'append' && (operation === 'create' || explicitTitle)) ? { title } : {}), ...(operation === 'create' ? { status: (args.metadata || {}).status || 'active' } : {}) };
+  const bodyValue = args.body ?? args.content ?? fields.body ?? fields.content ?? '';
+  const body = `${genericContent(bodyValue)}${genericContext(args)}`;
+  const payload = { operation, kind, ref, metadata, body };
+  if (!args.confirmation_token) return createConfirmation('dealpilot_write', payload, '这是一个会修改工作区记忆的操作。请审阅文档、正文、元数据和来源后确认。', payload);
+  consumeConfirmation(args.confirmation_token, 'dealpilot_write', payload);
+  const filePath = path.join(workspace, ref);
+  if (operation === 'create') {
+    try { await fs.access(filePath); throw new Error(`文档已存在：${ref}。请使用 update 或 append。`); } catch (error: any) { if (error?.code !== 'ENOENT') throw error; }
+    await writeYamlFrontmatter(filePath, { ...metadata, generated: { by: 'dealpilot-agent', at: new Date().toISOString() } }, body);
+  } else {
+    const current = await readYamlFrontmatter(filePath).catch(() => { throw new Error(`无法读取文档：${ref}`); });
+    const nextBody = operation === 'append' ? `${current.body.trimEnd()}\n\n${body.trim()}\n` : body;
+    await writeYamlFrontmatter(filePath, { ...current.meta, ...metadata, generated: { ...(current.meta.generated || {}), by: 'dealpilot-agent', at: new Date().toISOString() } }, nextBody);
+  }
+  const now = new Date().toISOString();
+  await appendBusinessEvent(workspace, { occurred_at: now, event_type: `memory.${operation}`, channel: 'conversation', generated_by: 'dealpilot-agent', source_ref: ref, summary: args.rationale || `${operation} ${ref}` });
+  if (['customer', 'deal', 'action'].includes(kind)) {
+    const current = await readYamlFrontmatter(filePath);
+    await updateStorageIndex(workspace, kind, { ref, ...current.meta, updated_at: now });
+  }
+  return { ok: true, ref, kind, operation };
 }
 
 // ── Archive ─────────────────────────────────────────────────────────────────

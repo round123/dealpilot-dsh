@@ -138,5 +138,17 @@ async function convertSource(workspace, sourceInput, sessionId, importId, univer
 export function registerCanonicalImportTools(ctx, harness, univer) {
     harness.registerTool(ctx, harness.defineTool({ name: 'dealpilot_ingest', description: '通过 Univer 将当前 session 附件或 Workspace 文件转换为 dealpilot.import/v1 标准 JSON。', parameters: { type: 'object', properties: { source: { type: 'object', description: 'session_attachment 使用 ref，workspace_file 使用 path。', properties: { kind: { type: 'string', enum: ['session_attachment', 'workspace_file'] }, ref: { type: 'string' }, path: { type: 'string' } }, required: ['kind'] } }, required: ['source'] }, async execute(args, exec) { if (!univer)
             throw new Error('Univer 转换服务不可用'); const workspace = resolveWorkspace(ctx.config); const sessionId = String(exec?.agent?.id || ''); const input = args.source; if (!input || !['session_attachment', 'workspace_file'].includes(input.kind) || (input.kind === 'session_attachment' ? !input.ref : !input.path))
-            throw new Error('导入源参数无效'); const id = `imp_${randomUUID()}`; const { doc, original, archived, univerRef, worktreeId } = await convertSource(workspace, input, sessionId, id, univer); const canonicalRef = `sources/imports/${id}/canonical.json`; await fs.writeFile(path.join(workspace, canonicalRef), JSON.stringify(doc, null, 2) + '\n'); const now = new Date().toISOString(); await writeJob(workspace, { import_job_id: id, session_id: sessionId, source_kind: input.kind, source_ref: original, archived_source_ref: archived, canonical_ref: canonicalRef, univer_ref: univerRef, univer_worktree_id: worktreeId, source: doc.source, status: 'converted', created_at: now, updated_at: now }); return JSON.stringify({ import_job_id: id, status: 'converted', source: doc.source, canonical_ref: canonicalRef, sheets: doc.sheets.map(s => ({ name: s.name, columns: s.columns, rows: s.rows.length })), warnings: doc.warnings }); } }));
+            throw new Error('导入源参数无效'); const id = `imp_${randomUUID()}`; const now = new Date().toISOString(); try {
+            const { doc, original, archived, univerRef, worktreeId } = await convertSource(workspace, input, sessionId, id, univer);
+            validateCanonicalDocument(doc);
+            const canonicalRef = `sources/imports/${id}/canonical.json`;
+            await fs.writeFile(path.join(workspace, canonicalRef), JSON.stringify(doc, null, 2) + '\n');
+            await writeJob(workspace, { import_job_id: id, session_id: sessionId, source_kind: input.kind, source_ref: original, archived_source_ref: archived, canonical_ref: canonicalRef, univer_ref: univerRef, univer_worktree_id: worktreeId, source: doc.source, status: 'converted', created_at: now, updated_at: new Date().toISOString() });
+            return JSON.stringify({ import_job_id: id, status: 'converted', source: doc.source, canonical_ref: canonicalRef, sheets: doc.sheets.map(s => ({ name: s.name, columns: s.columns, rows: s.rows.length })), warnings: doc.warnings });
+        }
+        catch (error) {
+            const failedSourceRef = input.kind === 'session_attachment' ? String(input.ref) : (path.isAbsolute(String(input.path)) ? '<external path rejected>' : String(input.path));
+            await writeJob(workspace, { import_job_id: id, session_id: sessionId, source_kind: input.kind, source_ref: failedSourceRef, archived_source_ref: '', canonical_ref: '', univer_ref: '', univer_worktree_id: '', source: { sessionId, name: 'unresolved', mediaType: 'application/octet-stream', sha256: '' }, status: 'failed', created_at: now, updated_at: new Date().toISOString(), error: String(error?.message || error) });
+            throw error;
+        } } }));
 }

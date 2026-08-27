@@ -134,6 +134,8 @@ function customerFromDocument(doc) {
         qualification: extractSection(doc.body, 'Qualification'),
         open_questions: extractSection(doc.body, 'Open questions'),
         contacts: [],
+        extra_metadata: extraMetadata(meta, ['title', 'status', 'source_category', 'source_label', 'relationship_stage', 'market', 'icp_fit', 'priority', 'generated']),
+        memory_excerpt: doc.body.trim().slice(0, 1200) || undefined,
     };
 }
 function dealFromDocument(doc, customerByRef) {
@@ -160,6 +162,8 @@ function dealFromDocument(doc, customerByRef) {
         correction_history: extractSection(doc.body, 'Correction history'),
         products: [],
         actions: [],
+        extra_metadata: extraMetadata(meta, ['title', 'status', 'customer', 'funnel_stage', 'priority', 'risk_level', 'risk_summary', 'last_activity_at', 'current_action', 'products', 'generated']),
+        memory_excerpt: doc.body.trim().slice(0, 1200) || undefined,
     };
 }
 function actionFromDocument(doc) {
@@ -173,7 +177,14 @@ function actionFromDocument(doc) {
         priority: meta.priority || 'unknown',
         reason: meta.reason || extractSectionText(doc.body, 'Reason'),
         updated_at: meta.generated?.at,
+        extra_metadata: extraMetadata(meta, ['title', 'status', 'deal', 'due_at', 'priority', 'reason', 'requires_human', 'generated']),
+        memory_excerpt: doc.body.trim().slice(0, 1200) || undefined,
     };
+}
+function extraMetadata(meta, known) {
+    const knownKeys = new Set(known);
+    const extra = Object.fromEntries(Object.entries(meta).filter(([key, value]) => !knownKeys.has(key) && value !== undefined));
+    return Object.keys(extra).length ? extra : undefined;
 }
 // ── Index Builders ──────────────────────────────────────────────────────────
 function buildContactsByCustomer(contacts) {

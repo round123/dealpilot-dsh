@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, mkdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -272,6 +272,45 @@ test('Mutating tools require an explicit confirmation token before changing OKF'
   }
 });
 
+test('Generic memory writes preserve open metadata and support append', async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), 'dealpilot-generic-write-'));
+  const workspaceId = `generic-write-${Date.now()}`;
+  const sessionId = `generic-write-session-${Date.now()}`;
+  try {
+    const manager = await import('../plugin/lib/workspace-manager.js');
+    await manager.ensureWorkspace(workspace);
+    manager.registerWorkspacePath(workspaceId, workspace);
+    await mkdir(path.join(workspace, 'sources'), { recursive: true });
+    await writeFile(path.join(workspace, 'sources', 'note.txt'), 'observed source', 'utf8');
+    const sessions = await import('../plugin/lib/dealpilot-session.js');
+    await sessions.createDealPilotSession(workspaceId, sessionId);
+    const { apply } = await import('../plugin/lib/index.js');
+    const registered = [];
+    apply({ tools: { register: tool => registered.push(tool) } });
+    const write = registered.find(tool => tool.name === 'dealpilot_write');
+    const execute = args => write.execute(args, { agent: { id: sessionId } });
+    const createArgs = { operation: 'create', kind: 'research-note', metadata: { customer_preference: 'written follow-up' }, body: '# Observation\n\nThe buyer prefers asynchronous communication.', evidence: [{ sourceRef: 'sources/note.txt', location: 'line 1', excerpt: 'observed source' }], rationale: 'Preserve an observation without requiring a predefined entity.' };
+    const preview = await execute(createArgs);
+    assert.equal(preview.requires_confirmation, true);
+    const created = await execute({ ...createArgs, confirmation_token: preview.confirmation_token });
+    assert.equal(created.ok, true);
+    const savedPath = path.join(workspace, created.ref);
+    assert.match(await readFile(savedPath, 'utf8'), /customer_preference: written follow-up/);
+    assert.match(await readFile(savedPath, 'utf8'), /prefers asynchronous communication/);
+    const appendArgs = { operation: 'append', kind: 'research-note', ref: created.ref, body: 'Follow-up remains email-first.', evidence: [{ sourceRef: 'sources/note.txt' }] };
+    const appendPreview = await execute(appendArgs);
+    const appended = await execute({ ...appendArgs, confirmation_token: appendPreview.confirmation_token });
+    assert.equal(appended.ok, true);
+    const finalBody = await readFile(savedPath, 'utf8');
+    assert.match(finalBody, /Follow-up remains email-first/);
+    assert.match(finalBody, /prefers asynchronous communication/);
+  } finally {
+    const sessions = await import('../plugin/lib/dealpilot-session.js');
+    sessions.removeDealPilotSession(sessionId);
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
 test('Write tool resolves human relationship names to workspace refs', async () => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), 'dealpilot-relationship-ref-'));
   const workspaceId = `relationship-${Date.now()}`;
@@ -389,6 +428,10 @@ test('Search supports fuzzy queries and field filters when indexes are absent', 
     await writeYamlFrontmatter(path.join(workspace, 'knowledge/customers/berlin.md'), { title: 'Berlin Maschinen', status: 'active', market: 'DE', priority: 'P1' }, '# Profile\n\nPrefers asynchronous email and Spanish documentation.');
     await writeYamlFrontmatter(path.join(workspace, 'knowledge/customers/tokyo.md'), { title: 'Tokyo Trading', status: 'active', market: 'JP', priority: 'P2' }, '# Profile');
     await writeYamlFrontmatter(path.join(workspace, 'knowledge/deals/berlin.md'), { title: 'Berlin Renewal', customer: 'knowledge/customers/berlin.md', status: 'active', funnel_stage: 'proposal', risk_level: 'high' }, '# Goal');
+    await mkdir(path.join(workspace, 'sources', 'imports'), { recursive: true });
+    await writeFile(path.join(workspace, 'sources', 'imports', 'evidence.json'), JSON.stringify({ note: 'buyer requests Spanish documentation' }), 'utf8');
+    await mkdir(path.join(workspace, 'knowledge', 'events'), { recursive: true });
+    await writeFile(path.join(workspace, 'knowledge', 'events', 'business-events.jsonl'), JSON.stringify({ occurred_at: '2026-08-26T10:00:00Z', event_type: 'customer.preference_recorded', summary: 'Spanish documentation requested' }) + '\n', 'utf8');
     const customers = await searchEntities(workspace, 'berlin', 'customer', { market: 'DE' }, 20);
     assert.equal(customers.count, 1);
     assert.equal(customers.results[0].title, 'Berlin Maschinen');
@@ -396,6 +439,12 @@ test('Search supports fuzzy queries and field filters when indexes are absent', 
     assert.equal(bodyMatches.count, 1);
     assert.equal(bodyMatches.results[0].match_source, 'body');
     assert.match(bodyMatches.results[0].snippet, /Spanish documentation/);
+    const evidenceMatches = await searchEntities(workspace, 'buyer requests', 'evidence', {}, 20);
+    assert.equal(evidenceMatches.count, 1);
+    assert.equal(evidenceMatches.results[0].entity, 'evidence');
+    const eventMatches = await searchEntities(workspace, 'preference_recorded', 'event', {}, 20);
+    assert.equal(eventMatches.count, 1);
+    assert.equal(eventMatches.results[0].entity, 'event');
     const deals = await searchEntities(workspace, '', 'deal', { risk_level: 'high', funnel_stage: 'proposal' }, 20);
     assert.equal(deals.count, 1);
     assert.equal(deals.results[0].title, 'Berlin Renewal');
@@ -411,7 +460,7 @@ test('Snapshot remains readable offline and skips a malformed concept file', asy
     const { writeYamlFrontmatter } = await import('../plugin/lib/okf-utils.js');
     const { buildSnapshot } = await import('../plugin/lib/snapshot.js');
     await ensureWorkspace(workspace);
-    await writeYamlFrontmatter(path.join(workspace, 'knowledge/customers/valid.md'), { title: 'Offline Customer', status: 'active' }, '# Profile');
+    await writeYamlFrontmatter(path.join(workspace, 'knowledge/customers/valid.md'), { title: 'Offline Customer', status: 'active', preferred_channel: 'email' }, '# Profile\n\nPrefers written follow-up.');
     await (await import('node:fs/promises')).writeFile(path.join(workspace, 'knowledge/customers/broken.md'), 'not frontmatter', 'utf8');
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => { throw new Error('DSH unavailable'); };
@@ -419,6 +468,8 @@ test('Snapshot remains readable offline and skips a malformed concept file', asy
       const first = await buildSnapshot(workspace, new Date('2026-08-26T12:00:00.000Z'));
       const second = await buildSnapshot(workspace, new Date('2026-08-26T12:00:00.000Z'));
       assert.equal(first.summary.customers, 1);
+      assert.equal(first.customers[0].extra_metadata.preferred_channel, 'email');
+      assert.match(first.customers[0].memory_excerpt, /Prefers written follow-up/);
       assert.deepEqual(second, first);
     } finally {
       globalThis.fetch = originalFetch;

@@ -17,11 +17,11 @@
 
       Use these tools for business work:
       - dealpilot_snapshot: read Today, customers, deals, funnel, and activity.
-      - dealpilot_search: find customers, deals, and actions.
+      - dealpilot_search: find customers, deals, actions, source evidence, and business events; continue with dealpilot_read when a hit needs context.
       - dealpilot_write: apply a confirmed direct memory change when appropriate; preserve open-ended content and use stable metadata only as an index projection.
       - dealpilot_action_transition: complete, cancel, block, reopen, or schedule an action.
       - dealpilot_ingest: acquire a current-session attachment or Workspace file and preserve it as readable evidence. It does not decide business meaning.
-      - dealpilot_read: read evidence, OKF documents, and derived views by reference.
+      - dealpilot_read: read evidence, OKF documents, and derived views by reference; use sheet/range for focused canonical reads and preserve source locations.
       - dealpilot_propose: save an evidence-backed, open-ended set of document changes. Choose useful content and organization at runtime.
       - dealpilot_apply: show a concrete proposal and evidence, obtain authorization, then apply it idempotently with provenance and events.
       - dealpilot_feedback_create / dealpilot_feedback_submit: create a redacted feedback draft and open a GitHub Issue only after confirmation.

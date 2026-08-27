@@ -31,6 +31,8 @@ interface CustomerSnapshot {
   qualification?: string[];
   open_questions?: string[];
   contacts: ContactEntry[];
+  extra_metadata?: Record<string, any>;
+  memory_excerpt?: string;
 }
 
 interface ContactEntry {
@@ -61,6 +63,8 @@ interface DealSnapshot {
   correction_history?: string[];
   products: { ref: string; title: string }[];
   actions: ActionSnapshot[];
+  extra_metadata?: Record<string, any>;
+  memory_excerpt?: string;
 }
 
 interface ActionSnapshot {
@@ -72,6 +76,8 @@ interface ActionSnapshot {
   priority: string;
   reason?: string;
   updated_at?: string;
+  extra_metadata?: Record<string, any>;
+  memory_excerpt?: string;
 }
 
 interface TodayItem {
@@ -269,6 +275,8 @@ function customerFromDocument(doc: OkfDocument): CustomerSnapshot {
     qualification: extractSection(doc.body, 'Qualification'),
     open_questions: extractSection(doc.body, 'Open questions'),
     contacts: [],
+    extra_metadata: extraMetadata(meta, ['title', 'status', 'source_category', 'source_label', 'relationship_stage', 'market', 'icp_fit', 'priority', 'generated']),
+    memory_excerpt: doc.body.trim().slice(0, 1200) || undefined,
   };
 }
 
@@ -296,6 +304,8 @@ function dealFromDocument(doc: OkfDocument, customerByRef: Map<string, CustomerS
     correction_history: extractSection(doc.body, 'Correction history'),
     products: [],
     actions: [],
+    extra_metadata: extraMetadata(meta, ['title', 'status', 'customer', 'funnel_stage', 'priority', 'risk_level', 'risk_summary', 'last_activity_at', 'current_action', 'products', 'generated']),
+    memory_excerpt: doc.body.trim().slice(0, 1200) || undefined,
   };
 }
 
@@ -310,7 +320,15 @@ function actionFromDocument(doc: OkfDocument): ActionSnapshot {
     priority: meta.priority || 'unknown',
     reason: meta.reason || extractSectionText(doc.body, 'Reason'),
     updated_at: meta.generated?.at,
+    extra_metadata: extraMetadata(meta, ['title', 'status', 'deal', 'due_at', 'priority', 'reason', 'requires_human', 'generated']),
+    memory_excerpt: doc.body.trim().slice(0, 1200) || undefined,
   };
+}
+
+function extraMetadata(meta: Record<string, any>, known: string[]): Record<string, any> | undefined {
+  const knownKeys = new Set(known);
+  const extra = Object.fromEntries(Object.entries(meta).filter(([key, value]) => !knownKeys.has(key) && value !== undefined));
+  return Object.keys(extra).length ? extra : undefined;
 }
 
 // ── Index Builders ──────────────────────────────────────────────────────────

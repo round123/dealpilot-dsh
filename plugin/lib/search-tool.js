@@ -2,13 +2,14 @@
 // Fuzzy search across customers, deals, and actions.
 // Prefers storage index, falls back to scanning OKF files.
 import * as path from 'node:path';
+import * as fs from 'node:fs/promises';
 import { readStorageIndex, readConceptDir, readYamlFrontmatter, resolveWorkspace, } from './okf-utils.js';
 import { searchPresentation } from './business-view.js';
 // ── Registration ────────────────────────────────────────────────────────────
 export function registerSearchTool(ctx, harness) {
     harness.registerTool(ctx, harness.defineTool({
         name: 'dealpilot_search',
-        description: `搜索 DealPilot OKF Workspace 中的客户、交易和行动。
+        description: `搜索 DealPilot OKF Workspace 中的客户、交易、行动、证据和事件。
 
 支持按名称、正文和扩展元数据搜索，并按字段筛选。
 
@@ -22,7 +23,7 @@ export function registerSearchTool(ctx, harness) {
                 },
                 entity: {
                     type: 'string',
-                    enum: ['customer', 'deal', 'action', 'all'],
+                    enum: ['customer', 'deal', 'action', 'evidence', 'event', 'all'],
                     description: '要搜索的实体类型（默认 all）',
                 },
                 filters: {
@@ -64,6 +65,8 @@ export async function searchEntities(workspace, query, entity, filters, limit) {
         ? ['customer', 'deal', 'action']
         : [entity];
     for (const type of entityTypes) {
+        if (type === 'evidence' || type === 'event')
+            continue;
         // Try index first, fall back to file scan
         let items = await readStorageIndex(workspace, type);
         if (!Array.isArray(items) || items.length === 0) {
@@ -79,6 +82,12 @@ export async function searchEntities(workspace, query, entity, filters, limit) {
             allResults.push({ ...item, ...(match ? { match_source: match.source, snippet: match.snippet } : {}), _entity: type });
         }
     }
+    // Search source files and event history on demand. Empty queries keep the
+    // compact business projection while content queries can discover any evidence.
+    if (queryLower && (entity === 'all' || entity === 'evidence'))
+        allResults.push(...await searchEvidence(workspace, queryLower, filters));
+    if (queryLower && (entity === 'all' || entity === 'event'))
+        allResults.push(...await searchEvents(workspace, queryLower, filters));
     // Sort: exact matches first, then starts-with, then alphabetical
     allResults.sort((a, b) => {
         const aExact = (a.title || '').toLowerCase() === queryLower;
@@ -151,4 +160,66 @@ async function scanEntityFiles(workspace, entity) {
         ...doc.meta,
         updated_at: doc.meta.generated?.at,
     }));
+}
+async function searchEvidence(workspace, queryLower, filters) {
+    const results = [];
+    const root = path.join(workspace, 'sources');
+    const visit = async (directory) => {
+        let entries;
+        try {
+            entries = await fs.readdir(directory, { withFileTypes: true });
+        }
+        catch {
+            return;
+        }
+        for (const entry of entries) {
+            const filePath = path.join(directory, entry.name);
+            if (entry.isDirectory()) {
+                await visit(filePath);
+                continue;
+            }
+            if (!entry.isFile() || !entry.name.endsWith('.json'))
+                continue;
+            let content;
+            try {
+                content = await fs.readFile(filePath, 'utf8');
+            }
+            catch {
+                continue;
+            }
+            const index = content.toLowerCase().indexOf(queryLower);
+            if (index < 0)
+                continue;
+            const ref = path.relative(workspace, filePath).replaceAll('\\', '/');
+            const item = { ref, title: entry.name, status: 'available', match_source: 'evidence', snippet: content.slice(Math.max(0, index - 80), index + queryLower.length + 160).replace(/\s+/g, ' ').trim(), _entity: 'evidence' };
+            if (matchesFilters(item, filters))
+                results.push(item);
+        }
+    };
+    await visit(root);
+    return results;
+}
+async function searchEvents(workspace, queryLower, filters) {
+    const ref = 'knowledge/events/business-events.jsonl';
+    let content;
+    try {
+        content = await fs.readFile(path.join(workspace, ref), 'utf8');
+    }
+    catch {
+        return [];
+    }
+    const results = [];
+    for (const line of content.split(/\r?\n/)) {
+        if (!line.trim() || !line.toLowerCase().includes(queryLower))
+            continue;
+        let event = {};
+        try {
+            event = JSON.parse(line);
+        }
+        catch { /* preserve malformed lines as searchable evidence */ }
+        const item = { ref, title: event.event_type || 'business event', status: 'recorded', occurred_at: event.occurred_at, match_source: 'event', snippet: line.slice(0, 320), _entity: 'event' };
+        if (matchesFilters(item, filters))
+            results.push(item);
+    }
+    return results;
 }

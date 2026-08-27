@@ -21,6 +21,10 @@ test('agent-native import preserves evidence and applies open-ended content', as
     assert.equal(job.source_kind, 'workspace_file'); assert.equal(job.source_ref, sourceRef); assert.match(job.archived_source_ref, /^sources\/imports\/imp_.+\/source\.xlsx$/);
     assert.deepEqual(await readFile(path.join(workspace, job.archived_source_ref)), await readFile(sourcePath));
     const evidence = await tool('dealpilot_read').execute({ ref: job.canonical_ref }, exec); assert.equal(evidence.ref, job.canonical_ref); assert.match(evidence.content, /Industrial automation buyer/); assert.match(evidence.content, /Company Name/);
+    const partialEvidence = await tool('dealpilot_read').execute({ ref: job.canonical_ref, sheet: 'Customers', range: 'A2:C3', include_raw: false }, exec);
+    assert.equal(partialEvidence.location, 'Customers!A2:C3');
+    assert.match(partialEvidence.content, /Acme GmbH/);
+    assert.doesNotMatch(partialEvidence.content, /Industrial automation buyer/);
     const malformedRef = 'sources/imports/malformed-canonical.json'; await writeFile(path.join(workspace, malformedRef), JSON.stringify({ schema: 'dealpilot.import/v1', source: {}, sheets: [], warnings: [], provenance: {} }));
     await assert.rejects(() => tool('dealpilot_read').execute({ ref: malformedRef }, exec), /canonical JSON source 结构无效/);
     await assert.rejects(() => tool('dealpilot_propose').execute({ operations: [{ operation: 'append', target: { ref: 'knowledge/customers/acme.md' }, content: { format: 'text', value: 'external evidence' }, evidence: [{ sourceRef: 'C:/outside/source.xlsx' }] }] }, exec), /当前 Workspace 内的相对路径/);
@@ -49,5 +53,8 @@ test('canonical import enforces workspace and session source boundaries', async 
     const own = await ingest.execute({ source: { kind: 'session_attachment', ref: ownRef } }, exec); assert.equal(own.status, 'converted');
     await assert.rejects(() => ingest.execute({ source: { kind: 'session_attachment', ref: foreignRef } }, exec), /不属于当前 session/);
     await assert.rejects(() => ingest.execute({ source: { kind: 'workspace_file', path: external } }, exec), /相对路径/);
+    const failedJobs = (await Promise.all((await readdir(path.join(workspace, 'storage', 'import-jobs'))).map(async (name) => JSON.parse(await readFile(path.join(workspace, 'storage', 'import-jobs', name), 'utf8'))))).filter((job) => job.status === 'failed');
+    assert.ok(failedJobs.some((job) => /相对路径/.test(job.error)));
+    assert.ok(failedJobs.every((job) => !path.isAbsolute(job.source_ref)));
   } finally { await rm(workspace, { recursive: true, force: true }); await rm(external, { force: true }); }
 });

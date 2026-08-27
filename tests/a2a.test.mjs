@@ -75,6 +75,12 @@ test('DealPilot compatibility APIs use the owned default workspace only', async 
   assert.doesNotMatch(hostBundle, /resolveWorkspace\(toolCtx\.config\)/);
 });
 
+test('DealPilot bundle composes the standard file upload plugin', async () => {
+  const patch = await readFile(path.join(root, 'plugin', 'cordis.patch.yml'), 'utf8');
+  assert.match(patch, /id:\s*file-upload/);
+  assert.match(patch, /name:\s*['"]dsh-file-upload['"]/);
+});
+
 test('DealPilot client exposes the business workbench interaction contract', async () => {
   const clientBundle = await readFile(path.join(root, 'plugin', 'client', 'client.js'), 'utf8');
   for (const marker of [

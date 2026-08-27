@@ -5,3 +5,5 @@
 - insert:
     - id: dealpilot
       name: 'dealpilot-dsh'
+    - id: file-upload
+      name: 'dsh-file-upload'

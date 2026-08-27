@@ -31,6 +31,7 @@
     }
   },
   "dependencies": {
+    "dsh-file-upload": "^0.4.3",
     "exceljs": "^4.4.0",
     "js-yaml": "^4.1.0"
   },

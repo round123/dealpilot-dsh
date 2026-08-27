@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { resolveWorkspace } from './okf-utils.js';
+import { isAbsolutePathLike, resolveWorkspace } from './okf-utils.js';
 export const IMPORT_SCHEMA = 'dealpilot.import/v1';
 export function validateCanonicalDocument(value) {
     if (!value || value.schema !== IMPORT_SCHEMA || !value.source || typeof value.source !== 'object' || !Array.isArray(value.sheets) || !Array.isArray(value.warnings) || !value.provenance)
@@ -33,16 +33,16 @@ catch {
 const writeJob = async (workspace, job) => { await fs.mkdir(jobsDir(workspace), { recursive: true }); await fs.writeFile(jobPath(workspace, job.import_job_id), JSON.stringify(job, null, 2) + '\n'); };
 async function resolveSourceFile(workspace, source, sessionId) {
     const value = source.kind === 'session_attachment' ? source.ref : source.path;
-    if (!value || path.isAbsolute(value))
+    if (!value || isAbsolutePathLike(value))
         throw new Error('导入源必须使用当前 Workspace 内的相对路径');
     const root = await fs.realpath(path.resolve(workspace));
     const lexical = path.resolve(root, value);
     const lexicalRel = path.relative(root, lexical);
-    if (!lexicalRel || lexicalRel.startsWith('..') || path.isAbsolute(lexicalRel))
+    if (!lexicalRel || lexicalRel.startsWith('..') || isAbsolutePathLike(lexicalRel))
         throw new Error('导入源必须位于当前 Workspace');
     const absolute = await fs.realpath(lexical);
     const realRel = path.relative(root, absolute);
-    if (!realRel || realRel.startsWith('..') || path.isAbsolute(realRel))
+    if (!realRel || realRel.startsWith('..') || isAbsolutePathLike(realRel))
         throw new Error('导入源解析后位于当前 Workspace 之外');
     const stat = await fs.stat(absolute);
     if (!stat.isFile())

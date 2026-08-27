@@ -5,6 +5,10 @@ import * as path from 'node:path';
 import * as yaml from 'js-yaml';
 import { resolveWorkspacePath } from './workspace-manager.js';
 import { currentWorkspacePath } from './workspace-context.js';
+/** Treat native and foreign-platform absolute paths as absolute references. */
+export function isAbsolutePathLike(value) {
+    return path.isAbsolute(value) || /^[A-Za-z]:[\\/]/u.test(value) || /^\\\\/u.test(value) || /^\/\//u.test(value);
+}
 // ── YAML Frontmatter ────────────────────────────────────────────────────────
 export async function readYamlFrontmatter(filePath) {
     const raw = await fs.readFile(filePath, 'utf-8');

@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { resolveWorkspace } from './okf-utils.js';
+import { isAbsolutePathLike, resolveWorkspace } from './okf-utils.js';
 
 export const IMPORT_SCHEMA = 'dealpilot.import/v1';
 type JobStatus = 'converted' | 'previewed' | 'committed' | 'failed';
@@ -28,11 +28,11 @@ const writeJob = async (workspace: string, job: ImportJob) => { await fs.mkdir(j
 
 async function resolveSourceFile(workspace: string, source: IngestSource, sessionId: string): Promise<{ absolute: string; relative: string }> {
   const value = source.kind === 'session_attachment' ? source.ref : source.path;
-  if (!value || path.isAbsolute(value)) throw new Error('导入源必须使用当前 Workspace 内的相对路径');
+  if (!value || isAbsolutePathLike(value)) throw new Error('导入源必须使用当前 Workspace 内的相对路径');
   const root = await fs.realpath(path.resolve(workspace)); const lexical = path.resolve(root, value); const lexicalRel = path.relative(root, lexical);
-  if (!lexicalRel || lexicalRel.startsWith('..') || path.isAbsolute(lexicalRel)) throw new Error('导入源必须位于当前 Workspace');
+  if (!lexicalRel || lexicalRel.startsWith('..') || isAbsolutePathLike(lexicalRel)) throw new Error('导入源必须位于当前 Workspace');
   const absolute = await fs.realpath(lexical); const realRel = path.relative(root, absolute);
-  if (!realRel || realRel.startsWith('..') || path.isAbsolute(realRel)) throw new Error('导入源解析后位于当前 Workspace 之外');
+  if (!realRel || realRel.startsWith('..') || isAbsolutePathLike(realRel)) throw new Error('导入源解析后位于当前 Workspace 之外');
   const stat = await fs.stat(absolute); if (!stat.isFile()) throw new Error('导入源必须是普通文件'); if (stat.size > 25 * 1024 * 1024) throw new Error('导入源超过 25 MB 大小限制');
   const relative = realRel.replaceAll('\\', '/'); if (source.kind === 'session_attachment' && (!sessionId || !relative.startsWith(`.dsh-uploads/${sessionId}/`))) throw new Error('导入附件不属于当前 session');
   return { absolute, relative };

@@ -1,19 +1,19 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { appendBusinessEvent, readYamlFrontmatter, updateStorageIndex, writeYamlFrontmatter } from './okf-utils.js';
+import { appendBusinessEvent, isAbsolutePathLike, readYamlFrontmatter, updateStorageIndex, writeYamlFrontmatter } from './okf-utils.js';
 import { createConfirmation, consumeConfirmation } from './confirmation.js';
 import { resolveWorkspace } from './okf-utils.js';
 import { IMPORT_SCHEMA, validateCanonicalDocument } from './canonical-import.js';
 const proposalDir = (workspace) => path.join(workspace, 'storage', 'proposals');
 const proposalPath = (workspace, id) => path.join(proposalDir(workspace), `${id}.json`);
 function safeRelative(workspace, value) {
-    if (!value || path.isAbsolute(value) || value.includes('..'))
+    if (!value || isAbsolutePathLike(value) || value.includes('..'))
         throw new Error('引用必须是当前 Workspace 内的相对路径');
     const normalized = value.replaceAll('\\', '/');
     const resolved = path.resolve(workspace, normalized);
     const rel = path.relative(workspace, resolved);
-    if (!rel || rel.startsWith('..') || path.isAbsolute(rel))
+    if (!rel || rel.startsWith('..') || isAbsolutePathLike(rel))
         throw new Error('引用必须位于当前 Workspace');
     return rel.replaceAll('\\', '/');
 }

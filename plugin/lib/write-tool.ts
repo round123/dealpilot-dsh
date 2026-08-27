@@ -10,6 +10,7 @@ import {
   appendBusinessEvent,
   updateStorageIndex,
   generateRef,
+  isAbsolutePathLike,
   resolveWorkspace,
   readConceptDir,
   normalizeRef,
@@ -536,10 +537,10 @@ function genericKind(value: unknown): string {
 }
 
 function safeWorkspaceRef(workspace: string, value: string): string {
-  if (!value || path.isAbsolute(value) || value.includes('..')) throw new Error('引用必须位于当前 Workspace');
+  if (!value || isAbsolutePathLike(value) || value.includes('..')) throw new Error('引用必须位于当前 Workspace');
   const resolved = path.resolve(workspace, value);
   const relative = path.relative(workspace, resolved);
-  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('引用必须位于当前 Workspace');
+  if (!relative || relative.startsWith('..') || isAbsolutePathLike(relative)) throw new Error('引用必须位于当前 Workspace');
   return relative.replaceAll('\\', '/');
 }
 

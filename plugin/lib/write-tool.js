@@ -2,7 +2,7 @@
 // Apply open-ended Agent-authored memory changes with stable workspace indexes.
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
-import { readYamlFrontmatter, writeYamlFrontmatter, appendBusinessEvent, updateStorageIndex, generateRef, resolveWorkspace, readConceptDir, normalizeRef, } from './okf-utils.js';
+import { readYamlFrontmatter, writeYamlFrontmatter, appendBusinessEvent, updateStorageIndex, generateRef, isAbsolutePathLike, resolveWorkspace, readConceptDir, normalizeRef, } from './okf-utils.js';
 import { syncGoalRuntime } from './goal-runtime.js';
 import { createConfirmation, consumeConfirmation } from './confirmation.js';
 import { writePresentation } from './business-view.js';
@@ -452,11 +452,11 @@ function genericKind(value) {
     return normalized || 'note';
 }
 function safeWorkspaceRef(workspace, value) {
-    if (!value || path.isAbsolute(value) || value.includes('..'))
+    if (!value || isAbsolutePathLike(value) || value.includes('..'))
         throw new Error('引用必须位于当前 Workspace');
     const resolved = path.resolve(workspace, value);
     const relative = path.relative(workspace, resolved);
-    if (!relative || relative.startsWith('..') || path.isAbsolute(relative))
+    if (!relative || relative.startsWith('..') || isAbsolutePathLike(relative))
         throw new Error('引用必须位于当前 Workspace');
     return relative.replaceAll('\\', '/');
 }

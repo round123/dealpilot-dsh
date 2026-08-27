@@ -7,6 +7,11 @@ import * as yaml from 'js-yaml';
 import { resolveWorkspacePath } from './workspace-manager.js';
 import { currentWorkspacePath } from './workspace-context.js';
 
+/** Treat native and foreign-platform absolute paths as absolute references. */
+export function isAbsolutePathLike(value: string): boolean {
+  return path.isAbsolute(value) || /^[A-Za-z]:[\\/]/u.test(value) || /^\\\\/u.test(value) || /^\/\//u.test(value);
+}
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface OkfDocument {

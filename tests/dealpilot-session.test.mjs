@@ -7,18 +7,19 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-test('DealPilot preset metadata and business rules are present', async () => {
+test('DealPilot preset metadata and agent principles are present', async () => {
   const metadata = await readFile(path.join(root, 'plugin', 'agent-preset', 'dealpilot-sales', 'preset.yml'), 'utf8');
   const composition = await readFile(path.join(root, 'plugin', 'agent-preset', 'dealpilot-sales', 'agent.cordis.yml'), 'utf8');
   assert.match(metadata, /id:\s*dealpilot-sales/);
   assert.match(metadata, /DealPilot 销售助理/);
-  for (const tool of ['dealpilot_snapshot', 'dealpilot_search', 'dealpilot_write', 'dealpilot_action_transition', 'dealpilot_ingest', 'dealpilot_read', 'dealpilot_propose', 'dealpilot_apply', 'dealpilot_whatsapp']) {
-    assert.match(composition, new RegExp(tool));
-  }
+  assert.doesNotMatch(composition, /\bdealpilot_[a-z_]+\b/);
   assert.match(composition, /absolute filesystem path/);
   assert.match(composition, /reasoning, tool-call commentary/);
   assert.match(composition, /evidence-backed/);
   assert.match(composition, /confirmation/i);
+  assert.match(composition, /LLM/);
+  assert.match(composition, /harness/i);
+  assert.match(composition, /unknowns/);
   assert.match(composition, /sampleOverCapGlobResults:\s*false/);
 });
 

@@ -17,7 +17,8 @@ DealPilot 不替换 DSH 默认页面，也不需要用户手动编辑本地目�
 
 - 已安装并能运行 `dsh` CLI
 - Node.js 22 或更高版本
-- pnpm 9 或更高版本
+- pnpm 11 或更高版本
+- Node.js 22.19 或更高版本（Univer Gateway 和渲染 Worker 的运行要求）
 
 ### 安装插件
 
@@ -26,6 +27,8 @@ DealPilot 不替换 DSH 默认页面，也不需要用户手动编辑本地目�
 ```powershell
 dsh plugin --profile web add github:round123/dealpilot-dsh#dist
 ```
+
+安装包会同时启用 `dsh-univer-office`。它提供 Sheet/Doc/Slide/Base/Board 的创建、编辑、导入、导出和审阅能力。
 
 如果使用 GitHub Release 下载的压缩包，先在解压后的插件目录安装生产依赖，再执行本地 link。`dsh plugin add` 对本地目录只创建 link，不会替插件目录安装 `node_modules`：
 
@@ -57,9 +60,8 @@ dsh plugin --profile web add .
 dsh web --no-open
 ```
 
-通用文件上传由随 DealPilot 一起安装的 `dsh-file-upload` 提供。它会把文件放入当前
-session 的 Workspace 下并提供 `read_document`；客户资料导入仍在导入中心通过 Artifact
-预览、去重和确认写入。
+通用文件上传由随 DealPilot 一起安装的 `dsh-file-upload` 提供；办公文件由 `dsh-univer-office`
+导入为隔离工作簿，在会话内预览、编辑、校验并导出。客户资料写回仍经过 DealPilot 的去重、预览和确认流程。
 
 打开：
 
@@ -85,7 +87,8 @@ DealPilot 页面由原生 DSH Conversation/Composer 加上产品业务视图组�
 - 客户、交易和跟进任务列表
 - 漏斗、交易生命周期、行动生命周期和活动时间线
 - 搜索、字段筛选、排序和详情面板
-- 导入中心：CSV、Markdown 表格和纯文本预览、去重、确认写入
+- Univer 工作簿：XLSX/CSV/TSV 导入，单元格编辑、公式、格式、筛选、图表和审阅
+- 客户资料写回：从已审阅工作簿生成导入预览，去重后确认写入
 - 客户/交易/行动的创建、更新、归档和确认流程
 - Action 的完成、取消、阻塞、重开和安排
 - Goal/Workflow 运行时投影
@@ -102,13 +105,13 @@ DealPilot 页面由原生 DSH Conversation/Composer 加上产品业务视图组�
 | `dealpilot_snapshot` | 读取 Today、客户、交易、漏斗、行动和活动快照 |
 | `dealpilot_write` | 创建、更新、归档 Customer/Deal/Action；支持 Customer 合并 |
 | `dealpilot_action_transition` | 完成、取消、阻塞、重开或安排 Action |
-| `dealpilot_artifact_*` | 上传资料、检查元数据和 XLSX 工作表，不暴露本地路径 |
-| `dealpilot_import_preview` / `dealpilot_import_commit` | 对 Artifact 预览、去重并在确认后导入 CSV、Markdown、纯文本或 XLSX |
+| `dealpilot_ingest` | 将当前 session 附件或 Workspace 文件转换为 canonical import JSON |
+| `dealpilot_import_preview` / `dealpilot_import_commit` | 对 canonical JSON 预览、去重并在确认后写入客户或交易 |
 | `dealpilot_feedback_*` | 生成脱敏反馈草稿，并在确认后打开 GitHub Issue |
 | `dealpilot_search` | 按名称模糊搜索，并按市场、阶段、风险等字段筛选 |
 | `dealpilot_whatsapp` | 保留工具协议；Chrome 扩展实际闭环暂未包含 |
 
-所有业务工具都从当前 DealPilot session 读取 Workspace。客户端不能传入任意绝对路径；文件先进入当前 Workspace 的 Artifact 存储，再由导入工具读取。没有绑定 Workspace 时，工具会返回“请先选择 DealPilot Workspace”。高影响操作必须使用一次性确认 token，系统不会自动发送外部消息。
+所有业务工具都从当前 DealPilot session 读取 Workspace。`dealpilot_ingest` 的 `source` 支持 `session_attachment`（当前 session 的附件）和 `workspace_file`（当前 Workspace 内的相对路径）；路径会经过真实路径边界校验，并复制到 Import Job 专属归档目录。没有绑定 Workspace 时，工具会返回“请先选择 DealPilot Workspace”。高影响操作必须使用一次性确认 token，系统不会自动发送外部消息。
 
 ## Workspace 数据
 
@@ -143,7 +146,6 @@ GET  /api/dealpilot/session/:id
 POST /api/dealpilot/session/:id/workspace
 GET  /api/dealpilot/sessions?workspaceId=...
 GET  /api/dealpilot/snapshot?workspaceId=...
-POST /api/dealpilot/import/preview
 GET  /api/dealpilot/export?workspaceId=...
 ```
 

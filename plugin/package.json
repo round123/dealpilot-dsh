@@ -31,19 +31,20 @@
     }
   },
   "dependencies": {
+    "dsh-univer-office": "^0.2.10",
     "dsh-file-upload": "^0.4.3",
-    "exceljs": "^4.4.0",
     "js-yaml": "^4.1.0"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-tools": "^0.1.1-rc.2"
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.8"
   },
   "devDependencies": {
-    "@deepseek-ai/dsh-tools": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.8",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.0.0",
     "@types/react": "~18.3.1",
+    "exceljs": "^4.4.0",
     "playwright": "^1.55.0",
     "react": "^18.3.1",
     "typescript": "^5.5.0"

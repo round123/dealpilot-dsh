@@ -159,6 +159,10 @@ export async function importEntities(workspace, data, format, options) {
     else {
         throw new Error(`Unsupported format: ${format}. Use csv, markdown, or text.`);
     }
+    return importRecordEntities(workspace, records, options);
+}
+export async function importRecordEntities(workspace, records, options) {
+    const { sourceCategory, sourceLabel, autoDedup, now } = options;
     const results = {
         total: records.length,
         created: 0,
@@ -234,6 +238,19 @@ export async function previewImport(workspace, data, format, autoDedup = true) {
             duplicates.push({ title: record.title.trim(), ref });
     }
     return { format, total: records.length, records, duplicates, warnings };
+}
+export async function previewImportRecords(workspace, records, autoDedup = true) {
+    const existing = autoDedup ? await loadExistingCustomers(workspace) : new Map();
+    const duplicates = [];
+    const warnings = [];
+    for (const record of records) {
+        if (!record.title?.trim())
+            warnings.push('存在缺少客户名称的记录');
+        const ref = record.title ? findDuplicate(record.title.trim(), existing) : null;
+        if (ref)
+            duplicates.push({ title: record.title.trim(), ref });
+    }
+    return { format: 'canonical', total: records.length, records, duplicates, warnings };
 }
 // ── Parsers ─────────────────────────────────────────────────────────────────
 function parseCSV(text) {

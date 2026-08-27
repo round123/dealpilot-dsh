@@ -363,22 +363,20 @@ function mountDealPilot(runtime) {
     const renderImportView = () => {
         const content = workbench.querySelector('[data-board-content]');
         content.innerHTML = `<section class="dealpilot-import-view">
-      <div class="dealpilot-form-head"><span class="dealpilot-eyebrow">Import Center</span><h3>导入客户资料</h3><p>先预览记录和重复项，再回到对话确认写入。预览不会修改工作区。</p></div>
-      <div class="dealpilot-import-form"><label class="dealpilot-upload-button">选择文件<input data-import-file type="file" accept=".csv,.md,.markdown,.txt,.xlsx,.xlsm"></label><label>格式<select data-import-format><option value="csv">CSV</option><option value="markdown">Markdown 表格</option><option value="text">纯文本列表</option></select></label><label>来源标签<input data-import-label placeholder="例如：2026 上海展会"></label></div>
-      <textarea data-import-data rows="12" placeholder="粘贴客户资料，例如：\nAcme Corp\nBeta Ltd"></textarea>
-      <div class="dealpilot-form-actions"><button data-import-preview type="button">生成导入预览</button><button data-import-to-chat type="button">在对话中确认导入</button></div>
-      <div data-import-result class="dealpilot-import-result">等待预览</div>
+      <div class="dealpilot-form-head"><span class="dealpilot-eyebrow">Univer Office</span><h3>导入并编辑工作簿</h3><p>文件会先进入隔离的 Univer 工作簿。你可以编辑单元格、公式、格式、筛选和图表，审阅后再确认写回销售工作区。</p></div>
+      <div class="dealpilot-import-form"><label class="dealpilot-upload-button">选择 XLSX / CSV / TSV 文件<input data-import-file type="file" accept=".csv,.tsv,.xlsx,.xlsm"></label></div>
+      <div data-import-result class="dealpilot-import-result">等待选择文件</div>
     </section>`;
         const result = content.querySelector('[data-import-result]');
         const upload = async (file) => {
             result.textContent = '正在上传资料...';
             try {
-                const response = await fetch(`/api/dealpilot/artifacts?workspaceId=${encodeURIComponent(selectedId)}`, { method: 'POST', headers: { 'content-type': file.type || 'application/octet-stream', 'x-file-name': file.name }, body: file });
-                const artifact = await response.json();
+                const response = await fetch(`/api/dealpilot/import/source?workspaceId=${encodeURIComponent(selectedId)}`, { method: 'POST', headers: { 'content-type': file.type || 'application/octet-stream', 'x-file-name': file.name }, body: file });
+                const source = await response.json();
                 if (!response.ok)
-                    throw new Error(artifact.error || '上传失败');
-                result.innerHTML = `<strong>已上传 ${escapeHtml(artifact.originalName)}</strong><span>Artifact ID: ${escapeHtml(artifact.id)}</span><button type="button" data-artifact-chat>生成导入预览</button>`;
-                result.querySelector('[data-artifact-chat]')?.addEventListener('click', () => sendToConversation(`请使用 artifact_id ${artifact.id} 调用 dealpilot_artifact_inspect 和 dealpilot_import_preview，展示解析结果，得到我确认后再调用 dealpilot_import_commit。`));
+                    throw new Error(source.error || '上传失败');
+                result.innerHTML = `<strong>已上传 ${escapeHtml(source.originalName)}</strong><span>已准备标准 JSON 转换</span><button type="button" data-artifact-chat>开始导入并审阅</button>`;
+                result.querySelector('[data-artifact-chat]')?.addEventListener('click', () => sendToConversation(`请使用 dealpilot_ingest，将 source 设置为 ${JSON.stringify(source.source)}，转换为 dealpilot.import/v1 标准 JSON并展示工作表和数据质量提示；用户审阅并明确确认后，再调用 dealpilot_import_preview 和 dealpilot_import_commit 写回销售工作区。`));
             }
             catch (err) {
                 result.textContent = err.message;
@@ -389,31 +387,6 @@ function mountDealPilot(runtime) {
             if (!file)
                 return;
             await upload(file);
-        });
-        content.querySelector('[data-import-preview]')?.addEventListener('click', async () => {
-            const data = content.querySelector('[data-import-data]').value;
-            const format = content.querySelector('[data-import-format]').value;
-            if (!data.trim()) {
-                result.textContent = '请先粘贴需要导入的资料';
-                return;
-            }
-            result.textContent = '正在解析和检查重复项...';
-            try {
-                const preview = await api('/api/dealpilot/import/preview', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceId: selectedId, data, format, autoDedup: true }) });
-                result.innerHTML = `<strong>共 ${preview.total} 条记录</strong><span>预计新增 ${Math.max(0, preview.total - (preview.duplicates || []).length)} 条，重复 ${preview.duplicates?.length || 0} 条</span>${preview.duplicates?.length ? `<ul>${preview.duplicates.map((item) => `<li>${escapeHtml(item.title)}：已存在</li>`).join('')}</ul>` : ''}${preview.warnings?.length ? `<p>${preview.warnings.map((item) => escapeHtml(item)).join('；')}</p>` : ''}`;
-            }
-            catch (err) {
-                result.textContent = err.message;
-            }
-        });
-        content.querySelector('[data-import-to-chat]')?.addEventListener('click', async () => {
-            const data = content.querySelector('[data-import-data]').value;
-            const label = content.querySelector('[data-import-label]').value;
-            if (data.trim())
-                if (!data.trim())
-                    return;
-                const file = new File([data], label ? `${label}.txt` : 'pasted-import.txt', { type: 'text/plain' });
-                await upload(file);
         });
     };
     const renderSettingsView = () => {

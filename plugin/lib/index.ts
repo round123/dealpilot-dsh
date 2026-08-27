@@ -11,10 +11,9 @@ import { ensureWorkspace, listWorkspaces, inspectWorkspace, workspacePathFromId,
 import { registerSnapshotTool } from './snapshot.js';
 import { registerWriteTool } from './write-tool.js';
 import { registerActionTool } from './action-tool.js';
-import { previewImport } from './import-tool.js';
+import { registerCanonicalImportTools } from './canonical-import.js';
 import { registerSearchTool } from './search-tool.js';
 import { registerWhatsappTool } from './whatsapp-tool.js';
-import { registerArtifactTools, stageUploadedArtifact, listArtifacts, getArtifact, deleteArtifact } from './artifact-tool.js';
 import { registerFeedbackTools } from './feedback-tool.js';
 import { createToolHarness } from './tool-compat.js';
 import { readGoalRuntime } from './goal-runtime.js';
@@ -26,7 +25,7 @@ import {
   switchDealPilotWorkspace,
 } from './dealpilot-session.js';
 
-export const inject = ['tools'];
+export const inject = ['tools', 'univer'];
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -109,7 +108,7 @@ export function apply(ctx: Record<string, any>) {
     registerActionTool(toolCtx, harness);
     registerSearchTool(toolCtx, harness);
     registerWhatsappTool(toolCtx, harness);
-    registerArtifactTools(toolCtx, harness);
+    registerCanonicalImportTools(toolCtx, harness, ctx.univer);
     registerFeedbackTools(toolCtx, harness);
     console.log('[dealpilot] registered DealPilot business and artifact tools');
   } else {
@@ -145,6 +144,24 @@ export function apply(ctx: Record<string, any>) {
       return { name: disposition[2], mediaType: type.trim(), data: bytes.slice(dataStart, end) };
     };
 
+    webServer.register({
+      kind: 'exact', path: '/api/dealpilot/import/source',
+      handler: async (req: any, res: any) => {
+        try {
+          await syncDshWorkspaceRegistry(req);
+          const url = new URL(req.url || '/', 'http://dealpilot.local');
+          const workspace = workspacePathFromId(url.searchParams.get('workspaceId') || '');
+          if (!workspace) return json(res, 400, { error: 'Invalid workspaceId' });
+          if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' });
+          const name = String(req.headers?.['x-file-name'] || 'upload.bin').replace(/[^a-zA-Z0-9._-]/g, '_');
+          const relative = `sources/imports/uploads/${Date.now()}-${name}`;
+          const target = path.join(workspace, relative);
+          await fs.mkdir(path.dirname(target), { recursive: true });
+          await fs.writeFile(target, await rawBody(req));
+          return json(res, 201, { source: { kind: 'workspace_file', path: relative }, originalName: name });
+        } catch (err: any) { json(res, 400, { error: err.message }); }
+      },
+    });
     webServer.register({
       kind: 'exact', path: '/api/dealpilot/workspaces',
       handler: async (req: any, res: any) => { try {
@@ -232,50 +249,6 @@ export function apply(ctx: Record<string, any>) {
           const workspaceId = url.searchParams.get('workspaceId') || undefined;
           const sessions = listDealPilotSessions(workspaceId).map(publicDealPilotSession);
           json(res, 200, { sessions });
-        } catch (err: any) { json(res, 400, { error: err.message }); }
-      },
-    });
-    webServer.register({
-      kind: 'exact', path: '/api/dealpilot/import/preview',
-      handler: async (req: any, res: any) => {
-        try {
-          const input = await body(req);
-          await syncDshWorkspaceRegistry(req);
-          const workspace = workspacePathFromId(String(input.workspaceId || ''));
-          if (!workspace) return json(res, 400, { error: 'Invalid workspaceId' });
-          const data = typeof input.data === 'string' ? input.data : '';
-          const format = ['csv', 'markdown', 'text'].includes(input.format) ? input.format : 'text';
-          json(res, 200, await previewImport(workspace, data, format, input.autoDedup !== false));
-        } catch (err: any) { json(res, 400, { error: err.message }); }
-      },
-    });
-    webServer.register({
-      kind: 'exact', path: '/api/dealpilot/artifacts',
-      handler: async (req: any, res: any) => {
-        try {
-          await syncDshWorkspaceRegistry(req);
-          const url = new URL(req.url || '/', 'http://dealpilot.local');
-          const workspaceId = url.searchParams.get('workspaceId') || '';
-          const workspace = workspacePathFromId(workspaceId);
-          if (!workspace) return json(res, 400, { error: 'Invalid workspaceId' });
-          if (req.method === 'GET') return json(res, 200, { artifacts: await listArtifacts(workspace) });
-          if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' });
-          const contentType = String(req.headers?.['content-type'] || ''); const bytes = await rawBody(req);
-          const uploaded = contentType.toLowerCase().startsWith('multipart/') ? multipart(contentType, bytes) : { name: String(req.headers?.['x-file-name'] || 'upload.bin'), mediaType: contentType, data: bytes };
-          return json(res, 201, await stageUploadedArtifact(workspace, workspaceId, uploaded.name, uploaded.mediaType, uploaded.data));
-        } catch (err: any) { json(res, 400, { error: err.message }); }
-      },
-    });
-    webServer.register({
-      kind: 'prefix', path: '/api/dealpilot/artifacts/',
-      handler: async (req: any, res: any) => {
-        try {
-          const parts = new URL(req.url || '/', 'http://dealpilot.local').pathname.split('/').filter(Boolean); const id = parts[parts.length - 1];
-          await syncDshWorkspaceRegistry(req); const url = new URL(req.url || '/', 'http://dealpilot.local'); const workspace = workspacePathFromId(url.searchParams.get('workspaceId') || '');
-          if (!workspace) return json(res, 400, { error: 'Invalid workspaceId' });
-          if (req.method === 'GET') { const item = await getArtifact(workspace, id); return item ? json(res, 200, item) : json(res, 404, { error: 'Artifact not found' }); }
-          if (req.method === 'DELETE') { await deleteArtifact(workspace, id); return json(res, 200, { ok: true }); }
-          return json(res, 405, { error: 'Method not allowed' });
         } catch (err: any) { json(res, 400, { error: err.message }); }
       },
     });

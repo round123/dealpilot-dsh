@@ -34,7 +34,7 @@ interface ImportArgs {
   confirmation_token?: string;
 }
 
-interface ImportRecord {
+export interface ImportRecord {
   title: string;
   entity: string;
   [key: string]: string;
@@ -223,6 +223,15 @@ export async function importEntities(
     throw new Error(`Unsupported format: ${format}. Use csv, markdown, or text.`);
   }
 
+  return importRecordEntities(workspace, records, options);
+}
+
+export async function importRecordEntities(
+  workspace: string,
+  records: ImportRecord[],
+  options: ImportOptions,
+): Promise<ImportResult> {
+  const { sourceCategory, sourceLabel, autoDedup, now } = options;
   const results: ImportResult = {
     total: records.length,
     created: 0,
@@ -307,6 +316,22 @@ export async function previewImport(
     if (ref) duplicates.push({ title: record.title.trim(), ref });
   }
   return { format, total: records.length, records, duplicates, warnings };
+}
+
+export async function previewImportRecords(
+  workspace: string,
+  records: ImportRecord[],
+  autoDedup = true,
+): Promise<{ format: 'canonical'; total: number; records: ImportRecord[]; duplicates: { title: string; ref: string }[]; warnings: string[] }> {
+  const existing = autoDedup ? await loadExistingCustomers(workspace) : new Map<string, string>();
+  const duplicates: { title: string; ref: string }[] = [];
+  const warnings: string[] = [];
+  for (const record of records) {
+    if (!record.title?.trim()) warnings.push('存在缺少客户名称的记录');
+    const ref = record.title ? findDuplicate(record.title.trim(), existing) : null;
+    if (ref) duplicates.push({ title: record.title.trim(), ref });
+  }
+  return { format: 'canonical', total: records.length, records, duplicates, warnings };
 }
 
 // ── Parsers ─────────────────────────────────────────────────────────────────

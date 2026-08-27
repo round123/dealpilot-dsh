@@ -14,8 +14,7 @@ const expectedTools = [
   'dealpilot_action_transition',
   'dealpilot_search',
   'dealpilot_whatsapp',
-  'dealpilot_artifact_list',
-  'dealpilot_artifact_inspect',
+  'dealpilot_ingest',
   'dealpilot_import_preview',
   'dealpilot_import_commit',
   'dealpilot_feedback_create',
@@ -75,10 +74,11 @@ test('DealPilot compatibility APIs use the owned default workspace only', async 
   assert.doesNotMatch(hostBundle, /resolveWorkspace\(toolCtx\.config\)/);
 });
 
-test('DealPilot bundle composes the standard file upload plugin', async () => {
+test('DealPilot declares the standard file upload integration', async () => {
   const patch = await readFile(path.join(root, 'plugin', 'cordis.patch.yml'), 'utf8');
-  assert.match(patch, /id:\s*file-upload/);
-  assert.match(patch, /name:\s*['"]dsh-file-upload['"]/);
+  const manifest = JSON.parse(await readFile(path.join(root, 'plugin', 'package.json'), 'utf8'));
+  assert.equal(manifest.dependencies['dsh-file-upload'], '^0.4.3');
+  assert.match(patch, /id:\s*dealpilot/);
 });
 
 test('DealPilot client exposes the business workbench interaction contract', async () => {
@@ -109,7 +109,9 @@ test('DealPilot client exposes the business workbench interaction contract', asy
     '导入中心',
     '工作区设置',
     'refreshSessionHistory',
-    '/api/dealpilot/import/preview',
+    'dealpilot_ingest',
+    'dealpilot_import_preview',
+    '标准 JSON',
   ]) {
     assert.ok(clientBundle.includes(marker), `${marker} must remain in the DealPilot workbench`);
   }
@@ -149,11 +151,12 @@ test('route client mounts the persistent business context and full workbench in 
     if (req.url?.startsWith('/api/dealpilot/snapshot')) {
       res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(snapshot)); return;
     }
-    if (req.url?.startsWith('/api/dealpilot/artifacts') && req.method === 'POST') {
+    if (req.url?.startsWith('/api/dealpilot/import/source') && req.method === 'POST') {
       const chunks = []; for await (const chunk of req) chunks.push(chunk);
       const name = req.headers['x-file-name'] || 'upload.csv';
       res.writeHead(201, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ id: `art_fixture_${String(name).replace(/\W/g, '_')}`, originalName: name, status: 'staged' })); return;
+      const sourcePath = `sources/imports/uploads/${String(name).replace(/\W/g, '_')}`;
+      res.end(JSON.stringify({ source: { kind: 'workspace_file', path: sourcePath }, originalName: name })); return;
     }
     res.writeHead(404); res.end();
   });
@@ -179,7 +182,7 @@ test('route client mounts the persistent business context and full workbench in 
     await writeFile(csvPath, 'title,market\nAcme GmbH,DE\nAcme Corp,US\n', 'utf8');
     await page.locator('[data-import-file]').setInputFiles(csvPath);
     await page.getByText(/已上传 simulated-customers.csv/).waitFor({ state: 'visible' });
-    assert.match(await page.locator('[data-import-result]').textContent(), /Artifact ID: art_fixture/);
+    assert.match(await page.locator('[data-import-result]').textContent(), /已准备标准 JSON/);
     await page.getByLabel('销售工作台导航').getByRole('button', { name: '客户', exact: true }).click();
     await page.getByRole('button', { name: /Acme Corp/ }).click();
     assert.match(await page.locator('.dealpilot-board-detail').textContent(), /关系阶段/);

@@ -20,8 +20,8 @@
       - dealpilot_search: find customers, deals, and actions.
       - dealpilot_write: create, update, archive, or explicitly merge customer records.
       - dealpilot_action_transition: complete, cancel, block, reopen, or schedule an action.
-      - dealpilot_artifact_list / dealpilot_artifact_inspect: inspect user-uploaded import materials without exposing paths.
-      - dealpilot_import_preview / dealpilot_import_commit: preview and commit CSV, Markdown, text, or XLSX imports after confirmation.
+      - dealpilot_ingest: convert a current-session attachment or a relative file in the current Workspace into dealpilot.import/v1 canonical JSON. Pass source.kind as session_attachment with source.ref, or workspace_file with source.path.
+      - dealpilot_import_preview / dealpilot_import_commit: map reviewed canonical JSON to customers or deals, deduplicate, and commit only after confirmation.
       - dealpilot_feedback_create / dealpilot_feedback_submit: create a redacted feedback draft and open a GitHub Issue only after confirmation.
       - dealpilot_whatsapp: read, analyze, or draft WhatsApp follow-up work.
 
@@ -33,6 +33,10 @@
       parsed records, duplicates, warnings, and estimated writes; present that preview once and wait for approval instead
       of retrying different paths. Keep responses concise and oriented around
       the next useful sales action.
+
+      For Office-file ingestion, use Univer first. Do not bypass the isolated workbook review by parsing an upload
+      directly with filesystem or legacy import tools. Only after the user approves the workbook and the DealPilot
+      import preview may you commit changes to OKF.
 
 # Reuse Standard filesystem capabilities. The DSH session cwd is the selected Workspace,
 # and these tools are intentionally not given shell/network capabilities here.

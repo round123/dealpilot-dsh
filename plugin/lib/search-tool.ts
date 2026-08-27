@@ -2,9 +2,11 @@
 // Fuzzy search across customers, deals, and actions.
 // Prefers storage index, falls back to scanning OKF files.
 
+import * as path from 'node:path';
 import {
   readStorageIndex,
   readConceptDir,
+  readYamlFrontmatter,
   resolveWorkspace,
   type IndexEntry,
   type OkfDocument,
@@ -47,7 +49,7 @@ export function registerSearchTool(ctx: Record<string, any>, harness: any) {
     name: 'dealpilot_search',
     description: `搜索 DealPilot OKF Workspace 中的客户、交易和行动。
 
-支持按名称模糊搜索和按字段筛选。
+支持按名称、正文和扩展元数据搜索，并按字段筛选。
 
 优先从 Storage 索引搜索（快），索引不存在时回退到解析 OKF 文件。`,
     parameters: {
@@ -55,7 +57,7 @@ export function registerSearchTool(ctx: Record<string, any>, harness: any) {
       properties: {
         query: {
           type: 'string',
-          description: '搜索关键词（匹配 title 字段）',
+          description: '搜索关键词（匹配名称、正文和元数据）',
         },
         entity: {
           type: 'string',
@@ -121,13 +123,13 @@ export async function searchEntities(
     }
 
     for (const item of items) {
-      // Name match
-      if (queryLower && !matchesQuery(item, queryLower)) continue;
+      const match = queryLower ? await findQueryMatch(workspace, item, queryLower) : undefined;
+      if (queryLower && !match) continue;
 
       // Filter match
       if (!matchesFilters(item, filters)) continue;
 
-      allResults.push({ ...item, _entity: type });
+      allResults.push({ ...item, ...(match ? { match_source: match.source, snippet: match.snippet } : {}), _entity: type });
     }
   }
 
@@ -160,9 +162,19 @@ export async function searchEntities(
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-function matchesQuery(item: IndexEntry, queryLower: string): boolean {
-  const title = (item.title || '').toLowerCase();
-  return title.includes(queryLower);
+async function findQueryMatch(workspace: string, item: IndexEntry, queryLower: string): Promise<{ source: string; snippet?: string } | undefined> {
+  if (JSON.stringify(item).toLowerCase().includes(queryLower)) return { source: 'metadata' };
+  if (!item.ref) return undefined;
+  try {
+    const document = await readYamlFrontmatter(path.join(workspace, item.ref));
+    const body = document.body.toLowerCase();
+    const index = body.indexOf(queryLower);
+    if (index < 0) return undefined;
+    const start = Math.max(0, index - 80);
+    return { source: 'body', snippet: document.body.slice(start, Math.min(document.body.length, index + queryLower.length + 160)).replace(/\s+/g, ' ').trim() };
+  } catch {
+    return undefined;
+  }
 }
 
 function matchesFilters(item: IndexEntry, filters: Record<string, any>): boolean {

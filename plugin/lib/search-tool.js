@@ -1,7 +1,8 @@
 // DealPilot DSH — Search Tool
 // Fuzzy search across customers, deals, and actions.
 // Prefers storage index, falls back to scanning OKF files.
-import { readStorageIndex, readConceptDir, resolveWorkspace, } from './okf-utils.js';
+import * as path from 'node:path';
+import { readStorageIndex, readConceptDir, readYamlFrontmatter, resolveWorkspace, } from './okf-utils.js';
 import { searchPresentation } from './business-view.js';
 // ── Registration ────────────────────────────────────────────────────────────
 export function registerSearchTool(ctx, harness) {
@@ -9,7 +10,7 @@ export function registerSearchTool(ctx, harness) {
         name: 'dealpilot_search',
         description: `搜索 DealPilot OKF Workspace 中的客户、交易和行动。
 
-支持按名称模糊搜索和按字段筛选。
+支持按名称、正文和扩展元数据搜索，并按字段筛选。
 
 优先从 Storage 索引搜索（快），索引不存在时回退到解析 OKF 文件。`,
         parameters: {
@@ -17,7 +18,7 @@ export function registerSearchTool(ctx, harness) {
             properties: {
                 query: {
                     type: 'string',
-                    description: '搜索关键词（匹配 title 字段）',
+                    description: '搜索关键词（匹配名称、正文和元数据）',
                 },
                 entity: {
                     type: 'string',
@@ -69,13 +70,13 @@ export async function searchEntities(workspace, query, entity, filters, limit) {
             items = await scanEntityFiles(workspace, type);
         }
         for (const item of items) {
-            // Name match
-            if (queryLower && !matchesQuery(item, queryLower))
+            const match = queryLower ? await findQueryMatch(workspace, item, queryLower) : undefined;
+            if (queryLower && !match)
                 continue;
             // Filter match
             if (!matchesFilters(item, filters))
                 continue;
-            allResults.push({ ...item, _entity: type });
+            allResults.push({ ...item, ...(match ? { match_source: match.source, snippet: match.snippet } : {}), _entity: type });
         }
     }
     // Sort: exact matches first, then starts-with, then alphabetical
@@ -106,9 +107,23 @@ export async function searchEntities(workspace, query, entity, filters, limit) {
     };
 }
 // ── Helpers ─────────────────────────────────────────────────────────────────
-function matchesQuery(item, queryLower) {
-    const title = (item.title || '').toLowerCase();
-    return title.includes(queryLower);
+async function findQueryMatch(workspace, item, queryLower) {
+    if (JSON.stringify(item).toLowerCase().includes(queryLower))
+        return { source: 'metadata' };
+    if (!item.ref)
+        return undefined;
+    try {
+        const document = await readYamlFrontmatter(path.join(workspace, item.ref));
+        const body = document.body.toLowerCase();
+        const index = body.indexOf(queryLower);
+        if (index < 0)
+            return undefined;
+        const start = Math.max(0, index - 80);
+        return { source: 'body', snippet: document.body.slice(start, Math.min(document.body.length, index + queryLower.length + 160)).replace(/\s+/g, ' ').trim() };
+    }
+    catch {
+        return undefined;
+    }
 }
 function matchesFilters(item, filters) {
     for (const [key, value] of Object.entries(filters)) {

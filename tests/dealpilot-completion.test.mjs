@@ -386,12 +386,16 @@ test('Search supports fuzzy queries and field filters when indexes are absent', 
     const { writeYamlFrontmatter } = await import('../plugin/lib/okf-utils.js');
     const { searchEntities } = await import('../plugin/lib/search-tool.js');
     await ensureWorkspace(workspace);
-    await writeYamlFrontmatter(path.join(workspace, 'knowledge/customers/berlin.md'), { title: 'Berlin Maschinen', status: 'active', market: 'DE', priority: 'P1' }, '# Profile');
+    await writeYamlFrontmatter(path.join(workspace, 'knowledge/customers/berlin.md'), { title: 'Berlin Maschinen', status: 'active', market: 'DE', priority: 'P1' }, '# Profile\n\nPrefers asynchronous email and Spanish documentation.');
     await writeYamlFrontmatter(path.join(workspace, 'knowledge/customers/tokyo.md'), { title: 'Tokyo Trading', status: 'active', market: 'JP', priority: 'P2' }, '# Profile');
     await writeYamlFrontmatter(path.join(workspace, 'knowledge/deals/berlin.md'), { title: 'Berlin Renewal', customer: 'knowledge/customers/berlin.md', status: 'active', funnel_stage: 'proposal', risk_level: 'high' }, '# Goal');
     const customers = await searchEntities(workspace, 'berlin', 'customer', { market: 'DE' }, 20);
     assert.equal(customers.count, 1);
     assert.equal(customers.results[0].title, 'Berlin Maschinen');
+    const bodyMatches = await searchEntities(workspace, 'Spanish documentation', 'customer', {}, 20);
+    assert.equal(bodyMatches.count, 1);
+    assert.equal(bodyMatches.results[0].match_source, 'body');
+    assert.match(bodyMatches.results[0].snippet, /Spanish documentation/);
     const deals = await searchEntities(workspace, '', 'deal', { risk_level: 'high', funnel_stage: 'proposal' }, 20);
     assert.equal(deals.count, 1);
     assert.equal(deals.results[0].title, 'Berlin Renewal');

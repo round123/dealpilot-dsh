@@ -15,8 +15,9 @@ const expectedTools = [
   'dealpilot_search',
   'dealpilot_whatsapp',
   'dealpilot_ingest',
-  'dealpilot_import_preview',
-  'dealpilot_import_commit',
+  'dealpilot_read',
+  'dealpilot_propose',
+  'dealpilot_apply',
   'dealpilot_feedback_create',
   'dealpilot_feedback_submit',
 ];
@@ -110,8 +111,10 @@ test('DealPilot client exposes the business workbench interaction contract', asy
     '工作区设置',
     'refreshSessionHistory',
     'dealpilot_ingest',
-    'dealpilot_import_preview',
-    '标准 JSON',
+    'dealpilot_read',
+    'dealpilot_propose',
+    'dealpilot_apply',
+    '读取证据',
   ]) {
     assert.ok(clientBundle.includes(marker), `${marker} must remain in the DealPilot workbench`);
   }
@@ -182,7 +185,7 @@ test('route client mounts the persistent business context and full workbench in 
     await writeFile(csvPath, 'title,market\nAcme GmbH,DE\nAcme Corp,US\n', 'utf8');
     await page.locator('[data-import-file]').setInputFiles(csvPath);
     await page.getByText(/已上传 simulated-customers.csv/).waitFor({ state: 'visible' });
-    assert.match(await page.locator('[data-import-result]').textContent(), /已准备标准 JSON/);
+    assert.match(await page.locator('[data-import-result]').textContent(), /已准备读取证据/);
     await page.getByLabel('销售工作台导航').getByRole('button', { name: '客户', exact: true }).click();
     await page.getByRole('button', { name: /Acme Corp/ }).click();
     assert.match(await page.locator('.dealpilot-board-detail').textContent(), /关系阶段/);

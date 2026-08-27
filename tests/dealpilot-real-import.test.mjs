@@ -5,13 +5,12 @@ import os from 'node:os';
 import path from 'node:path';
 import ExcelJS from '../plugin/node_modules/exceljs/lib/exceljs.nodejs.js';
 
-test('canonical import flows through JSON, preview, commit, and dedup', async () => {
+test('agent-native import preserves evidence and applies open-ended content', async () => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), 'dealpilot-real-import-'));
   try {
     const manager = await import('../plugin/lib/workspace-manager.js'); const sessions = await import('../plugin/lib/dealpilot-session.js');
     await manager.ensureWorkspace(workspace); const workspaceId = `dealpilot/${path.basename(workspace)}`; manager.registerWorkspacePath(workspaceId, workspace);
-    const session = await sessions.createDealPilotSession(workspaceId, 'real-import-session'); const legacy = await import('../plugin/lib/import-tool.js');
-    await legacy.importEntities(workspace, 'title,market\nAcme Corp,US', 'csv', { sourceCategory: 'fixture', autoDedup: true, now: new Date().toISOString() });
+    const session = await sessions.createDealPilotSession(workspaceId, 'real-import-session');
     const workbook = new ExcelJS.Workbook(); const sheet = workbook.addWorksheet('Customers');
     sheet.addRow(['Company Name', 'Country', 'Entity', 'Profile', 'Customer']); sheet.addRow(['Acme GmbH', 'DE', 'customer', 'Industrial automation buyer', '']); sheet.addRow(['Acme Corp', 'US', 'customer', 'Existing customer should deduplicate', '']); sheet.addRow(['Acme GmbH Renewal', 'DE', 'deal', 'Expansion opportunity', 'Acme GmbH']);
     const sourceRef = `sources/imports/uploads/simulated-${Date.now()}.xlsx`; const sourcePath = path.join(workspace, sourceRef); await mkdir(path.dirname(sourcePath), { recursive: true }); await writeFile(sourcePath, Buffer.from(await workbook.xlsx.writeBuffer()));
@@ -21,10 +20,17 @@ test('canonical import flows through JSON, preview, commit, and dedup', async ()
     const job = JSON.parse(await readFile(path.join(workspace, 'storage', 'import-jobs', `${ingested.import_job_id}.json`), 'utf8'));
     assert.equal(job.source_kind, 'workspace_file'); assert.equal(job.source_ref, sourceRef); assert.match(job.archived_source_ref, /^sources\/imports\/imp_.+\/source\.xlsx$/);
     assert.deepEqual(await readFile(path.join(workspace, job.archived_source_ref)), await readFile(sourcePath));
-    const preview = await tool('dealpilot_import_preview').execute({ import_job_id: ingested.import_job_id, target: 'mixed', sheet: 'Customers' }, exec); assert.equal(preview.requires_confirmation, true); assert.equal(preview.preview.total, 3); assert.ok(preview.confirmation_token);
-    const committed = await tool('dealpilot_import_commit').execute({ import_job_id: ingested.import_job_id, target: 'mixed', sheet: 'Customers', confirmation_token: preview.confirmation_token }, exec); assert.equal(committed.created, 2);
-    assert.equal((await readdir(path.join(workspace, 'knowledge', 'customers'))).filter((name) => name.endsWith('.md')).length, 2); assert.equal((await readdir(path.join(workspace, 'knowledge', 'deals'))).filter((name) => name.endsWith('.md')).length, 1);
-    const customerFiles = (await readdir(path.join(workspace, 'knowledge', 'customers'))).filter((name) => name.endsWith('.md')); const acme = customerFiles.find((name) => name.includes('-acme-gmbh.')); assert.ok(acme); assert.match(await readFile(path.join(workspace, 'knowledge', 'customers', acme), 'utf8'), /Industrial automation buyer/);
+    const evidence = await tool('dealpilot_read').execute({ ref: job.canonical_ref }, exec); assert.equal(evidence.ref, job.canonical_ref); assert.match(evidence.content, /Industrial automation buyer/); assert.match(evidence.content, /Company Name/);
+    const malformedRef = 'sources/imports/malformed-canonical.json'; await writeFile(path.join(workspace, malformedRef), JSON.stringify({ schema: 'dealpilot.import/v1', source: {}, sheets: [], warnings: [], provenance: {} }));
+    await assert.rejects(() => tool('dealpilot_read').execute({ ref: malformedRef }, exec), /canonical JSON source 结构无效/);
+    await assert.rejects(() => tool('dealpilot_propose').execute({ operations: [{ operation: 'append', target: { ref: 'knowledge/customers/acme.md' }, content: { format: 'text', value: 'external evidence' }, evidence: [{ sourceRef: 'C:/outside/source.xlsx' }] }] }, exec), /当前 Workspace 内的相对路径/);
+    const proposal = await tool('dealpilot_propose').execute({ operations: [{ operation: 'create', target: { kind: 'customer', label: 'Acme GmbH' }, metadata: { preferred_channel: 'email', source_language: 'es' }, content: { format: 'markdown', value: '# Profile\n\nIndustrial automation buyer. Prefers asynchronous email and does not schedule morning meetings.' }, evidence: [{ sourceRef: job.canonical_ref, location: 'Customers!A2:E2', excerpt: 'Acme GmbH' }], rationale: 'Capture the customer context from the imported material.' }] }, exec); assert.ok(proposal.proposal_id);
+    const pending = await tool('dealpilot_apply').execute({ proposal_id: proposal.proposal_id }, exec); assert.equal(pending.requires_confirmation, true); assert.ok(pending.confirmation_token);
+    const otherSession = await sessions.createDealPilotSession(workspaceId, 'other-import-session');
+    await assert.rejects(() => tool('dealpilot_apply').execute({ proposal_id: proposal.proposal_id }, { agent: { id: otherSession.sessionId } }), /不属于当前 session/);
+    sessions.removeDealPilotSession(otherSession.sessionId);
+    const applied = await tool('dealpilot_apply').execute({ proposal_id: proposal.proposal_id, confirmation_token: pending.confirmation_token }, exec); assert.equal(applied.status, 'applied');
+    const customerFiles = (await readdir(path.join(workspace, 'knowledge', 'customers'))).filter((name) => name.endsWith('.md')); const acme = customerFiles.find((name) => name.includes('-acme-gmbh.')); assert.ok(acme); const saved = await readFile(path.join(workspace, 'knowledge', 'customers', acme), 'utf8'); assert.match(saved, /Prefers asynchronous email/); assert.match(saved, /Evidence:/); assert.match(saved, /preferred_channel/);
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 

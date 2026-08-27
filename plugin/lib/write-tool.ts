@@ -1,5 +1,5 @@
 // DealPilot DSH — Write Tool
-// Create, update, and archive customers, deals, and actions.
+// Apply open-ended Agent-authored memory changes with stable workspace indexes.
 
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
@@ -43,22 +43,6 @@ interface WriteResult {
   newStatus?: string;
 }
 
-// ── Entity Field Definitions ─────────────────────────────────────────────────
-
-const ENTITY_FIELDS: Record<EntityType, string[]> = {
-  customer: [
-    'source_category', 'source_label', 'relationship_stage',
-    'market', 'icp_fit', 'priority',
-  ],
-  deal: [
-    'customer', 'funnel_stage', 'priority', 'risk_level',
-    'risk_summary', 'last_activity_at', 'products', 'current_action',
-  ],
-  action: [
-    'deal', 'due_at', 'priority', 'reason', 'requires_human',
-  ],
-};
-
 const BODY_SECTIONS: Record<EntityType, string[]> = {
   customer: ['Profile', 'Qualification', 'Open questions'],
   deal: ['Goal', 'Confirmed facts', 'Inferences', 'Open questions', 'Risks', 'Correction history'],
@@ -70,12 +54,9 @@ const BODY_SECTIONS: Record<EntityType, string[]> = {
 export function registerWriteTool(ctx: Record<string, any>, harness: any): void {
   harness.registerTool(ctx, harness.defineTool({
     name: 'dealpilot_write',
-    description: `在 DealPilot OKF Workspace 中创建或更新业务对象。
+    description: `在 DealPilot OKF Workspace 中应用 Agent 形成的记忆变更。
 
-支持三种实体类型：
-- customer: 客户公司。字段：title, source_category, source_label, relationship_stage, market, icp_fit, status, priority, profile, qualification, open_questions
-- deal: 交易机会。字段：title, customer, funnel_stage, priority, risk_level, risk_summary, status, goal, products, confirmed_facts, inferences, open_questions, risks
-- action: 行动任务。字段：title, deal, status, due_at, priority, reason, requires_human, check_condition
+支持文档创建、更新、正文追加、归档和关系维护。稳定元数据只用于索引和安全校验，fields 中的开放式内容会被保留并写入文档。
 
 支持三种操作：
 - create: 创建新对象（不需要 ref）
@@ -96,7 +77,7 @@ export function registerWriteTool(ctx: Record<string, any>, harness: any): void 
         source_ref: { type: 'string', description: '合并来源对象引用路径（merge 时必需；必须与 ref 同为 customer）' },
         fields: {
           type: 'object',
-          description: '要写入的字段。create 时必需 title；update 时只写提供的字段',
+          description: 'Agent 根据当前证据形成的开放式内容；可包含正文区、扩展元数据和关系信息',
         },
         confirmation_token: { type: 'string', description: '用户确认预览后返回的一次性确认令牌' },
       },
@@ -378,12 +359,12 @@ async function createEntity(
     generated: { by: 'dealpilot-dsh', at: now },
   };
 
-  // Copy entity-specific fields
-  const allowedFields = ENTITY_FIELDS[entity] || [];
-  for (const key of allowedFields) {
-    if (fields[key] !== undefined) {
-      meta[key] = fields[key];
-    }
+  // Preserve Agent-authored metadata. Stable relationship/status fields remain
+  // useful for indexes, but open-world content must not be filtered here.
+  const bodyKeys = new Set((BODY_SECTIONS[entity] || []).map(section => section.toLowerCase().replace(/\s+/g, '_')));
+  for (const [key, value] of Object.entries(fields)) {
+    if (['title', 'status', 'body', 'content', 'generated', 'ref', ...bodyKeys].includes(key)) continue;
+    if (value !== undefined) meta[key] = value;
   }
 
   // Build body from sections
@@ -564,6 +545,11 @@ async function archiveEntity(
 function buildBody(entity: EntityType, fields: Record<string, any>): string {
   const sections = BODY_SECTIONS[entity] || [];
   const lines: string[] = [];
+
+  if (fields.body !== undefined || fields.content !== undefined) {
+    lines.push(String(fields.body ?? fields.content));
+    lines.push('');
+  }
 
   for (const section of sections) {
     const key = section.toLowerCase().replace(/\s+/g, '_');

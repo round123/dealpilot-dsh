@@ -226,12 +226,12 @@ function mountDealPilot(runtime: any) {
     closeWorkbench();
   };
 
-  const renderEmptyState = () => `
+  const renderEmptyState = (scope: 'workspace' | 'view' = 'workspace', view = activeView) => scope === 'workspace' ? `
     <div class="dealpilot-empty-state">
       <span class="dealpilot-empty-mark">D</span><h3>开始建立销售脉络</h3>
-      <p>当前工作区还没有客户、交易或跟进。可以从一条对话开始。</p>
+      <p>当前工作区还没有可观察的业务记录。可以从一条对话开始。</p>
       <div class="dealpilot-empty-actions">${EMPTY_PROMPTS.map(([label, prompt]) => `<button data-prompt="${escapeHtml(prompt)}" type="button">${escapeHtml(label)}</button>`).join('')}</div>
-    </div>`;
+    </div>` : `<div class="dealpilot-quiet-state dealpilot-view-empty">${escapeHtml(VIEW_TITLES[view] || '当前视图')}暂无匹配记录</div>`;
 
   const renderContext = () => {
     const content = contextPanel.querySelector<HTMLElement>('[data-context-content]')!;
@@ -310,7 +310,7 @@ function mountDealPilot(runtime: any) {
   const renderImportView = () => {
     const content = workbench.querySelector<HTMLElement>('[data-board-content]')!;
     content.innerHTML = `<section class="dealpilot-import-view">
-      <div class="dealpilot-form-head"><span class="dealpilot-eyebrow">Univer Office</span><h3>导入并编辑工作簿</h3><p>文件会先进入隔离的 Univer 工作簿。你可以编辑单元格、公式、格式、筛选和图表，审阅后再确认写回销售工作区。</p></div>
+      <div class="dealpilot-form-head"><span class="dealpilot-eyebrow">Evidence Workspace</span><h3>导入并理解资料</h3><p>文件会保留为可读取证据。让 Agent 阅读全部内容、说明依据并提出可审阅的工作区变更。</p></div>
       <div class="dealpilot-import-form"><label class="dealpilot-upload-button">选择 XLSX / CSV / TSV 文件<input data-import-file type="file" accept=".csv,.tsv,.xlsx,.xlsm"></label></div>
       <div data-import-result class="dealpilot-import-result">等待选择文件</div>
     </section>`;
@@ -318,10 +318,10 @@ function mountDealPilot(runtime: any) {
     const upload = async (file: File) => {
       result.textContent = '正在上传资料...';
       try {
-        const response = await fetch(`/api/dealpilot/import/source?workspaceId=${encodeURIComponent(selectedId)}`, { method: 'POST', headers: { 'content-type': file.type || 'application/octet-stream', 'x-file-name': file.name }, body: file });
+        const response = await fetch(`/api/dealpilot/import/source?workspaceId=${encodeURIComponent(selectedId)}`, { method: 'POST', headers: { 'content-type': file.type || 'application/octet-stream', 'x-file-name': encodeURIComponent(file.name) }, body: file });
         const source = await response.json(); if (!response.ok) throw new Error(source.error || '上传失败');
-        result.innerHTML = `<strong>已上传 ${escapeHtml(source.originalName)}</strong><span>已准备标准 JSON 转换</span><button type="button" data-artifact-chat>开始导入并审阅</button>`;
-        result.querySelector('[data-artifact-chat]')?.addEventListener('click', () => sendToConversation(`请使用 dealpilot_ingest，将 source 设置为 ${JSON.stringify(source.source)}，转换为 dealpilot.import/v1 标准 JSON并展示工作表和数据质量提示；用户审阅并明确确认后，再调用 dealpilot_import_preview 和 dealpilot_import_commit 写回销售工作区。`));
+        result.innerHTML = `<strong>已上传 ${escapeHtml(source.originalName)}</strong><span>已准备读取证据</span><button type="button" data-artifact-chat>让 Agent 阅读资料</button>`;
+        result.querySelector('[data-artifact-chat]')?.addEventListener('click', () => sendToConversation(`请使用 dealpilot_ingest 获取这份资料，随后使用 dealpilot_read 阅读完整内容和来源。请根据证据说明你的理解、发现的额外信息和不确定性；如需写入工作区，使用 dealpilot_propose 生成可审阅提案，得到确认后使用 dealpilot_apply。`));
       } catch (err: any) { result.textContent = err.message; }
     };
     content.querySelector('[data-import-file]')?.addEventListener('change', async () => {
@@ -367,7 +367,7 @@ function mountDealPilot(runtime: any) {
     const rows = sortedRows(view);
     const list = content.querySelector<HTMLElement>('[data-board-list]')!;
     list.innerHTML = rows.length ? rows.map((item: any, index: number) => `
-      <button class="dealpilot-board-item${selectedItem === item ? ' selected' : ''}" data-item-index="${index}" type="button"><i class="tone-dot tone-${escapeHtml(itemTone(item, view))}"></i><span><strong>${escapeHtml(itemTitle(item, view))}</strong><small>${escapeHtml(itemMeta(item, view))}</small></span><span class="dealpilot-row-arrow" aria-hidden="true">›</span></button>`).join('') : renderEmptyState();
+      <button class="dealpilot-board-item${selectedItem === item ? ' selected' : ''}" data-item-index="${index}" type="button"><i class="tone-dot tone-${escapeHtml(itemTone(item, view))}"></i><span><strong>${escapeHtml(itemTitle(item, view))}</strong><small>${escapeHtml(itemMeta(item, view))}</small></span><span class="dealpilot-row-arrow" aria-hidden="true">›</span></button>`).join('') : renderEmptyState('view', view);
     list.querySelectorAll<HTMLButtonElement>('[data-item-index]').forEach((node) => node.addEventListener('click', () => { selectedItem = sortedRows(view)[Number(node.dataset.itemIndex)]; renderBoard(view); }));
     list.querySelectorAll<HTMLButtonElement>('[data-prompt]').forEach((button) => button.addEventListener('click', () => sendToConversation(button.dataset.prompt || '')));
     content.querySelector<HTMLInputElement>('[data-board-search]')?.addEventListener('input', (event) => { searchQuery = (event.target as HTMLInputElement).value; selectedItem = undefined; renderBoard(view); });
@@ -622,7 +622,7 @@ function registerDealPilotToolViews(runtime: any): void {
   const React = (window as any).__dealpilotReact;
   if (!slots?.inject || !React?.createElement) return;
 
-  const keys = ['dealpilot_snapshot', 'dealpilot_search', 'dealpilot_write', 'dealpilot_action_transition', 'dealpilot_import_preview', 'dealpilot_import_commit'];
+  const keys = ['dealpilot_snapshot', 'dealpilot_search', 'dealpilot_write', 'dealpilot_action_transition', 'dealpilot_ingest', 'dealpilot_read', 'dealpilot_propose', 'dealpilot_apply'];
   slots.inject('tool.call.toolview', () => function* registerViews() {
     for (const key of keys) {
       yield slots.register({ name: 'tool.call.toolview', key, locale: 'dealpilot' }, (props: any) =>
@@ -755,7 +755,7 @@ function renderFunnel(items: any[]): string {
 
 function boardSubtitle(view: string, snapshot: any): string {
   const count = view === 'customers' ? snapshot?.summary?.customers : view === 'deals' ? snapshot?.summary?.active_deals : view === 'today' ? snapshot?.summary?.today : undefined;
-  const copy: Record<string, string> = { today: '聚焦需要推进的销售事项', customers: '管理客户关系、市场和优先级', deals: '掌握阶段、风险和下一步行动', actions: '安排、推进和完成跟进', funnel: '查看活跃交易的阶段分布', activity: '追踪最近的业务变化', weekly: '回顾本周变化，安排下周重点', risk: '集中处理高风险交易', stalled: '识别长时间没有推进的交易', 'deal-lifecycle': '按漏斗阶段查看交易推进', 'action-lifecycle': '按状态查看跟进任务', import: '解析资料并在对话中确认导入', settings: '管理当前工作区和数据导出' };
+  const copy: Record<string, string> = { today: '聚焦需要推进的销售事项', customers: '管理客户关系、市场和优先级', deals: '掌握阶段、风险和下一步行动', actions: '安排、推进和完成跟进', funnel: '查看活跃交易的阶段分布', activity: '追踪最近的业务变化', weekly: '回顾本周变化，安排下周重点', risk: '集中处理高风险交易', stalled: '识别长时间没有推进的交易', 'deal-lifecycle': '按漏斗阶段查看交易推进', 'action-lifecycle': '按状态查看跟进任务', import: '查看证据并协作形成提案', settings: '管理当前工作区和数据导出' };
   return `${copy[view] || '当前销售工作区'}${count !== undefined ? ` · ${count} 条` : ''}`;
 }
 

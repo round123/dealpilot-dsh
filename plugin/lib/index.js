@@ -1,5 +1,5 @@
 // DealPilot DSH — Host plugin entry point
-// Registers all 6 DealPilot tools, the DealPilot session APIs, and the
+// Registers DealPilot capabilities, the DealPilot session APIs, and the
 // route-scoped native DSH workbench.
 import * as fs from 'node:fs/promises';
 import { copyFileSync, mkdirSync } from 'node:fs';
@@ -11,6 +11,7 @@ import { registerSnapshotTool } from './snapshot.js';
 import { registerWriteTool } from './write-tool.js';
 import { registerActionTool } from './action-tool.js';
 import { registerCanonicalImportTools } from './canonical-import.js';
+import { registerAgentMemoryTools } from './agent-memory.js';
 import { registerSearchTool } from './search-tool.js';
 import { registerWhatsappTool } from './whatsapp-tool.js';
 import { registerFeedbackTools } from './feedback-tool.js';
@@ -108,7 +109,7 @@ async function createDshSession(req, workspacePath) {
 }
 export function apply(ctx) {
     installDealPilotPreset();
-    // ── Register 6 business tools ────────────────────────────────────────────
+    // ── Register business capabilities ───────────────────────────────────────
     // Tools must receive a workspace from their DealPilot session context.
     const toolCtx = { config: { requireDealPilotSession: true } };
     const harness = createToolHarness(ctx, toolCtx);
@@ -119,8 +120,9 @@ export function apply(ctx) {
         registerSearchTool(toolCtx, harness);
         registerWhatsappTool(toolCtx, harness);
         registerCanonicalImportTools(toolCtx, harness, ctx.univer);
+        registerAgentMemoryTools(toolCtx, harness);
         registerFeedbackTools(toolCtx, harness);
-        console.log('[dealpilot] registered DealPilot business and artifact tools');
+        console.log('[dealpilot] registered DealPilot Agent-Native capabilities');
     }
     else {
         console.warn('[dealpilot] tools service not available — tools not registered');
@@ -191,7 +193,13 @@ export function apply(ctx) {
                         return json(res, 400, { error: 'Invalid workspaceId' });
                     if (req.method !== 'POST')
                         return json(res, 405, { error: 'Method not allowed' });
-                    const name = String(req.headers?.['x-file-name'] || 'upload.bin').replace(/[^a-zA-Z0-9._-]/g, '_');
+                    const encodedName = String(req.headers?.['x-file-name'] || 'upload.bin');
+                    let originalName = encodedName;
+                    try {
+                        originalName = decodeURIComponent(encodedName);
+                    }
+                    catch { /* retain the encoded fallback */ }
+                    const name = originalName.replace(/[^a-zA-Z0-9._-]/g, '_');
                     const relative = `sources/imports/uploads/${Date.now()}-${name}`;
                     const target = path.join(workspace, relative);
                     await fs.mkdir(path.dirname(target), { recursive: true });

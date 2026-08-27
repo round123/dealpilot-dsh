@@ -92,7 +92,7 @@ function mountDealPilot(runtime) {
       <div class="dealpilot-setup-steps"><span class="active">1 选择</span><span>2 检测</span><span>3 进入</span></div>
       <label for="dealpilot-workspace-select">工作区</label><select id="dealpilot-workspace-select"><option value="">加载中...</option></select>
       <div class="dealpilot-status" data-status>正在加载工作区...</div>
-      <div class="dealpilot-onboarding-actions"><button data-initialize hidden type="button">初始化并进入</button><button data-cancel-workspace hidden type="button">取消</button></div>
+      <div class="dealpilot-onboarding-actions"><button data-new-workspace type="button">选择新的文件夹</button><button data-initialize hidden type="button">初始化并进入</button><button data-cancel-workspace hidden type="button">取消</button></div>
     </div>`;
     document.body.append(contextPanel, contextLauncher, workbench, shade);
     const style = document.createElement('style');
@@ -103,10 +103,13 @@ function mountDealPilot(runtime) {
     const select = shade.querySelector('#dealpilot-workspace-select');
     const status = shade.querySelector('[data-status]');
     const initializeButton = shade.querySelector('[data-initialize]');
+    const newWorkspaceButton = shade.querySelector('[data-new-workspace]');
     const cancelButton = shade.querySelector('[data-cancel-workspace]');
     let selectedId = '';
     let inspection;
     let workspaceBeforePicker = '';
+    let activeWorkspacePickerCleanup;
+    let workspacePickerFromReady = false;
     let inspectVersion = 0;
     let snapshot;
     let activeView = 'today';
@@ -487,7 +490,12 @@ function mountDealPilot(runtime) {
         try {
             const data = await api(`/api/dealpilot/sessions?workspaceId=${encodeURIComponent(selectedId)}`);
             const sessions = Array.isArray(data.sessions) ? data.sessions : [];
-            sessionList.innerHTML = sessions.length ? sessions.slice(0, 8).map((item, index) => `<button class="dealpilot-session-item${index === 0 ? ' active' : ''}" data-session-id="${escapeHtml(item.sessionId)}" type="button"><span class="dealpilot-session-dot active"></span><span>${escapeHtml(`对话 ${new Date(item.createdAt).toLocaleDateString('zh-CN')}`)}</span></button>`).join('') : '<span class="dealpilot-session-dot"></span>暂无历史对话';
+            const nativeSessions = getSessions()?.list?.getSnapshot?.().byId || {};
+            sessionList.innerHTML = sessions.length ? sessions.slice(0, 8).map((item, index) => {
+                const native = nativeSessions[item.sessionId];
+                const title = String(native?.displayTitle || native?.title || item.title || '').trim() || `对话 ${new Date(item.createdAt).toLocaleDateString('zh-CN')}`;
+                return `<button class="dealpilot-session-item${index === 0 ? ' active' : ''}" data-session-id="${escapeHtml(item.sessionId)}" type="button"><span class="dealpilot-session-dot active"></span><span>${escapeHtml(title)}</span></button>`;
+            }).join('') : '<span class="dealpilot-session-dot"></span>暂无历史对话';
             sessionList.querySelectorAll('[data-session-id]').forEach((button) => button.addEventListener('click', async () => {
                 const id = button.dataset.sessionId || '';
                 if (!id)
@@ -641,7 +649,7 @@ function mountDealPilot(runtime) {
     const load = async () => {
         try {
             const data = await api('/api/dealpilot/workspaces');
-            select.innerHTML = '<option value="">选择工作区</option>' + (data.workspaces || []).map((w) => `<option value="${escapeHtml(w.id)}"${w.status === 'archived' ? ' disabled' : ''}>${escapeHtml(w.name)}${w.status === 'archived' ? '（已归档）' : ''}</option>`).join('');
+            populateWorkspaceOptions(data.workspaces || []);
             const saved = sessionStorage.getItem('dealpilot.workspaceId');
             if (saved && (data.workspaces || []).some((w) => w.id === saved)) {
                 select.value = saved;
@@ -654,7 +662,121 @@ function mountDealPilot(runtime) {
             setStatus(`工作区加载失败：${err.message}`, true);
         }
     };
+    const populateWorkspaceOptions = (workspaces) => {
+        select.innerHTML = '<option value="">选择工作区</option>' + workspaces.map((w) => `<option value="${escapeHtml(w.id)}"${w.status === 'archived' ? ' disabled' : ''}>${escapeHtml(w.name)}${w.status === 'archived' ? '（已归档）' : ''}</option>`).join('');
+    };
+    const chooseNewWorkspace = async () => {
+        if (activeWorkspacePickerCleanup)
+            return;
+        workspacePickerFromReady = document.body.classList.contains('dealpilot-ready');
+        const nativeWorkspaces = getWorkspaces();
+        const pickDirectory = nativeWorkspaces?.pickDirectory;
+        const createWorkspace = nativeWorkspaces?.create;
+        if (typeof pickDirectory === 'function' && typeof createWorkspace === 'function') {
+            let pickerActive = true;
+            const cleanup = () => {
+                pickerActive = false;
+                newWorkspaceButton.disabled = false;
+                cancelButton.hidden = true;
+                activeWorkspacePickerCleanup = undefined;
+            };
+            activeWorkspacePickerCleanup = cleanup;
+            newWorkspaceButton.disabled = true;
+            cancelButton.hidden = false;
+            setStatus('请选择一个文件夹...');
+            try {
+                const pickedPath = await pickDirectory.call(nativeWorkspaces);
+                if (!pickerActive)
+                    return;
+                if (!pickedPath) {
+                    cleanup();
+                    setStatus('未选择文件夹，当前工作区保持不变');
+                    return;
+                }
+                setStatus('正在连接工作区...');
+                const workspace = await createWorkspace.call(nativeWorkspaces, { path: pickedPath });
+                if (!pickerActive)
+                    return;
+                const workspaceId = String(workspace?.workspaceId || '');
+                if (!workspaceId)
+                    throw new Error('DSH 未返回 Workspace id');
+                cleanup();
+                const data = await api('/api/dealpilot/workspaces');
+                const workspaces = Array.isArray(data.workspaces) ? data.workspaces : [];
+                populateWorkspaceOptions(workspaces);
+                select.value = workspaceId;
+                await inspect(workspaceId);
+            }
+            catch (err) {
+                if (pickerActive) {
+                    cleanup();
+                    setStatus(`工作区选择失败：${err?.message || String(err)}`, true);
+                }
+            }
+            return;
+        }
+        const nativeAdd = Array.from(document.querySelectorAll('button[aria-label="添加工作区"]'))[0];
+        if (!nativeAdd) {
+            setStatus('DSH 文件夹选择器暂不可用', true);
+            return;
+        }
+        const before = new Set(Array.from(select.options).map((option) => option.value).filter(Boolean));
+        newWorkspaceButton.disabled = true;
+        setStatus('请选择一个新的文件夹...');
+        const workspaceSlot = nativeAdd.closest('[data-slot="sidebar.workspaces"]');
+        const workspaceRegion = workspaceSlot?.parentElement;
+        nativeAdd.classList.remove('dealpilot-native-hidden');
+        workspaceRegion?.classList.remove('dealpilot-native-workspaces-hidden');
+        const restoreNativeWorkspaceUi = () => {
+            nativeAdd.classList.add('dealpilot-native-hidden');
+            workspaceRegion?.classList.add('dealpilot-native-workspaces-hidden');
+        };
+        let timer;
+        const cleanup = () => {
+            if (timer !== undefined)
+                window.clearInterval(timer);
+            restoreNativeWorkspaceUi();
+            newWorkspaceButton.disabled = false;
+            cancelButton.hidden = true;
+            activeWorkspacePickerCleanup = undefined;
+        };
+        activeWorkspacePickerCleanup = cleanup;
+        cancelButton.hidden = false;
+        nativeAdd.click();
+        const pickMenuEntry = () => {
+            const entry = Array.from(document.querySelectorAll('[role="menuitem"], [role="option"], button'))
+                .find((item) => /添加工作区/.test(item.textContent || '') && getComputedStyle(item).display !== 'none');
+            if (entry) {
+                entry.click();
+                return;
+            }
+            window.setTimeout(pickMenuEntry, 80);
+        };
+        pickMenuEntry();
+        let attempts = 0;
+        timer = window.setInterval(async () => {
+            attempts += 1;
+            try {
+                const data = await api('/api/dealpilot/workspaces');
+                const workspaces = Array.isArray(data.workspaces) ? data.workspaces : [];
+                const created = workspaces.find((item) => item?.id && !before.has(String(item.id)));
+                if (created) {
+                    cleanup();
+                    populateWorkspaceOptions(workspaces);
+                    select.value = String(created.id);
+                    await inspect(String(created.id));
+                    return;
+                }
+            }
+            catch { }
+            if (attempts >= 120) {
+                cleanup();
+                setStatus('未检测到新工作区，当前工作区保持不变');
+            }
+        }, 500);
+    };
     select.addEventListener('change', () => inspect(select.value));
+    newWorkspaceButton.addEventListener('click', chooseNewWorkspace);
     initializeButton.addEventListener('click', async () => {
         initializeButton.disabled = true;
         setStatus('正在初始化 DealPilot...');
@@ -673,6 +795,7 @@ function mountDealPilot(runtime) {
         }
     });
     panel.querySelector('[data-change-workspace]').addEventListener('click', () => {
+        workspacePickerFromReady = true;
         workspaceBeforePicker = selectedId;
         cancelButton.hidden = false;
         shade.hidden = false;
@@ -685,12 +808,20 @@ function mountDealPilot(runtime) {
         openWorkbench(button.dataset.sidebarView || 'today');
     }));
     cancelButton.addEventListener('click', () => {
+        activeWorkspacePickerCleanup?.();
         inspectVersion += 1;
+        if (!workspacePickerFromReady) {
+            cancelButton.hidden = true;
+            shade.hidden = false;
+            setStatus('请选择一个工作区');
+            return;
+        }
         selectedId = workspaceBeforePicker || selectedId;
         select.value = selectedId;
         cancelButton.hidden = true;
         shade.hidden = true;
         setStatus('已保留当前工作区');
+        workspacePickerFromReady = false;
     });
     panel.querySelector('[data-new-session]').addEventListener('click', async () => {
         if (!selectedId)

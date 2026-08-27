@@ -71,83 +71,22 @@ DealPilot 的基本假设是：软件面对的是开放世界，而不是一组�
 
 ## 本地调试契约
 
-DealPilot 是独立的 DSH 插件；`dsh-super-injector` 是开发环境的运行时基础设施。调试时可以使用 injector
-注入、热重载、侧挂和回滚 DealPilot，但不得把 injector 的源码、依赖、`dev_*` 工具或配置复制到本仓库，
-也不得把 injector 打进 DealPilot 发布包。客户只需要 DealPilot 的正式包。
+DealPilot 是独立的 DSH 插件，`dsh-super-injector` 只作为本机开发环境的运行时手术台。Injector 可以
+注入、热重载、侧挂、验证和回滚插件；它的源码、依赖、配置和开发工具不进入 DealPilot 仓库或正式包。
 
-### 调试顺序
+### Injector 约定
 
-1. 先确认环境和范围：
+- 开发态插件由 injector 管理；正式发布仍由 DSH 的标准 bundle 装配。
+- 注入对象是构建后的标准插件包。修改代码后重新构建，injector 监听的运行目录会自动 reload；需要时可手动调用
+  `dev_reload_package`。
+- 任何 reload 都应验证 host 与 client 是否同时更新。失败时保留旧版本，依据返回结果和日志决定重试或回滚。
+- 注入、侧挂和卸载只改变开发运行态，不绕过 DealPilot 的权限、确认、幂等和审计边界。
 
-   ```powershell
-   dsh --version
-   dsh plugin --profile web list
-   git status --short
-   ```
+### 调试原则
 
-   确认正在使用的 profile 是 `web`，列表中有 `dealpilot-dsh` 和独立的
-   `@dsh-external/dsh-super-injector`。不要假设当前目录就是 DSH 的 Workspace；业务工具必须从当前
-   DealPilot session 解析 Workspace。
+调试遵循一个可重复的闭环：观察当前状态，做最小修改，重新构建并让 injector 应用变更，再验证行为和界面。
+优先使用临时 Workspace 或只读检查；保留失败证据、运行日志和版本关系，使 Agent 能继续定位和修正。
 
-2. 先做不改变业务数据的检查：
+### 记录
 
-   ```powershell
-   cd <repo-root>\plugin
-   pnpm exec tsc -p tsconfig.json
-   pnpm run test:all
-   node --check client\client.js
-   ```
-
-   失败时先记录第一个错误及其文件、行号，再继续做运行时检查。修复完成后重新跑完整测试，不用只跑
-   最后失败的单个用例作为结论。
-
-3. 需要验证运行时行为时，先确认 DSH web 正在运行，再使用已安装的 injector：
-
-   ```text
-   dev_plugin_status
-   dev_self_test
-   ```
-
-   修改本仓库后重新构建，再让 injector 对当前插件包执行 `dev_reload_package`。验证 host 工具和
-   `/dealpilot` 页面都已更新；reload 失败时保留旧版本，先读取返回的失败原因和 DSH 日志，再决定是否
-   回滚或重试。不要为了刷新代码反复重启整个 DSH。
-
-4. 用真实工作区验证前，优先使用临时 Workspace 和测试 fixture。真实 Workspace 的检查应当是只读的：
-   先用 Agent 能力读取、搜索和查看来源，再判断是否是数据问题。不要通过直接编辑业务 Markdown、索引或
-   事件文件来“修复”测试结果。
-
-### 按现象定位
-
-- **插件或工具没有出现**：检查 `dsh plugin --profile web list`、injector 的 `dev_plugin_status`、
-  profile 的 bundle 清单和 DSH 启动日志。确认加载的是当前 profile，而不是另一个 DSH 实例。
-- **host 工具报错**：先跑 TypeScript 编译和 Node 语法检查，查看工具返回的结构化错误、当前 session
-  和 Workspace 绑定，再检查对应的 `storage/`、`sources/` 或 `knowledge/` 文件。
-- **页面没有更新**：确认插件的 client 文件存在且 `node --check` 通过，使用 injector reload 后刷新页面；
-  同时检查 DSH web 日志中的 client 注册和路由注册结果。
-- **导入结果为空或不完整**：检查 `storage/import-jobs/<id>.json` 的状态和错误、原始文件归档、
-  canonical 证据内容及来源定位。空的业务快照只说明观察投影没有匹配项，不等于源文件没有事实。
-- **路径或权限错误**：只使用当前 Workspace 内的相对引用；跨平台绝对路径、路径穿越、其他 session 的
-  附件和 Workspace 外的文件都应被拒绝。验证边界时使用临时文件，不使用客户数据。
-
-### 运行时调试边界
-
-- injector 的注入、reload、stage、promote 和卸载只用于开发验证；正式发布走普通 DSH bundle 装配。
-- 业务写入、状态迁移、外部通信和归档仍然经过 DealPilot 的提案、确认、幂等和审计机制。调试不能绕过
-  Harness 直接写 OKF。
-- 遇到失败、部分完成、冲突或重试时，保留原始返回值、相关日志和任务引用；不要用删除状态文件或重置
-  Workspace 来隐藏问题。
-- 修改 profile 或 injector 配置前先读取现状并保留可恢复副本；仓库代码、profile 配置和业务 Workspace
-  分开报告，避免把环境修复误写成产品改动。
-
-### 调试报告
-
-每次完成调试后，用以下顺序记录结果：
-
-```text
-现象：用户看到了什么
-证据：日志、工具结果、文件引用和复现命令
-判断：故障属于 host、client、数据、插件装配还是外部依赖
-处理：修改了哪个边界，为什么
-验证：编译、测试、injector self-test 和浏览器结果
-遗留：仍需关注的版本、生态或环境风险
-```
+调试记录应说明现象、证据、判断、处理、验证和遗留风险，区分插件代码、injector 装配、DSH host、client 与业务数据。

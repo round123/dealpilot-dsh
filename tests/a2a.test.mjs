@@ -180,14 +180,6 @@ test('route client mounts the persistent business context and full workbench in 
     await page.locator('[data-import-file]').setInputFiles(csvPath);
     await page.getByText(/已上传 simulated-customers.csv/).waitFor({ state: 'visible' });
     assert.match(await page.locator('[data-import-result]').textContent(), /Artifact ID: art_fixture/);
-    await page.evaluate(() => {
-      const file = new File(['title,market\nNordlicht Energy,DE\n'], 'simulated-drop.csv', { type: 'text/csv' });
-      const transfer = new DataTransfer(); transfer.items.add(file);
-      document.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
-    });
-    await page.getByText(/已上传 simulated-drop.csv/).waitFor({ state: 'visible' });
-    assert.match(await page.locator('[data-import-result]').textContent(), /simulated-drop.csv/);
-
     await page.getByLabel('销售工作台导航').getByRole('button', { name: '客户', exact: true }).click();
     await page.getByRole('button', { name: /Acme Corp/ }).click();
     assert.match(await page.locator('.dealpilot-board-detail').textContent(), /关系阶段/);

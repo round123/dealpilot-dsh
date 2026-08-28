@@ -22,11 +22,28 @@ DealPilot 不替换 DSH 默认页面，也不需要用户手动编辑本地目�
 
 ### 安装插件
 
-推荐直接让 DSH profile 从 GitHub 安装 `dist` 分支。这样 pnpm 会在 profile 中解析并安装插件的生产依赖：
+推荐让 DSH profile 从 GitHub 的 `dist` 发布压缩包安装。压缩包不会触发 Git 源码包的 `prepare` 构建流程，适合普通用户首次安装和更新：
 
 ```powershell
-dsh plugin --profile web add github:round123/dealpilot-dsh#dist
+dsh plugin --profile web add https://github.com/round123/dealpilot-dsh/archive/refs/heads/dist.tar.gz --allow-build=sharp --allow-build=tesseract.js
 ```
+
+`sharp` 和 `tesseract.js` 是办公文件处理所需的原生依赖，参数只允许这两个依赖执行安装构建脚本。
+
+更新已安装版本时，先移除当前插件再安装最新发布压缩包：
+
+```powershell
+dsh plugin --profile web remove dealpilot-dsh
+dsh plugin --profile web add https://github.com/round123/dealpilot-dsh/archive/refs/heads/dist.tar.gz --allow-build=sharp --allow-build=tesseract.js
+```
+
+更新只替换插件及其生产依赖，不会删除 Workspace 或业务数据。完成后重新启动 DSH：
+
+```powershell
+dsh web --no-open
+```
+
+如果网络环境缓存了旧压缩包，可在 URL 后追加当前 `dist` 提交的短 SHA 作为查询参数，或重新执行一次安装命令。
 
 安装包会同时启用 `dsh-univer-office`。它提供 Sheet/Doc/Slide/Base/Board 的创建、编辑、导入、导出和审阅能力。
 

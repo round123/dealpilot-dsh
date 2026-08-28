@@ -19,7 +19,10 @@ import { createToolHarness } from './tool-compat.js';
 import { readGoalRuntime } from './goal-runtime.js';
 import { normalizeRef, readYamlFrontmatter } from './okf-utils.js';
 import { createDealPilotSession, getDealPilotSession, listDealPilotSessions, publicDealPilotSession, switchDealPilotWorkspace, } from './dealpilot-session.js';
-export const inject = ['tools', 'univer'];
+import { apply as applyUniverOffice } from 'dsh-univer-office';
+// DealPilot owns the file-capability dependency in its distributable package.
+// The host must not require a separately installed top-level Univer bundle.
+export const inject = ['tools'];
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 async function readDshFrontendIndex(req) {
     if (req?.headers?.host) {
@@ -110,6 +113,14 @@ async function createDshSession(req, workspacePath) {
 }
 export function apply(ctx) {
     installDealPilotPreset();
+    if (!ctx.univer && typeof ctx.plugin === 'function') {
+        try {
+            ctx.plugin(applyUniverOffice);
+        }
+        catch (error) {
+            console.warn('[dealpilot] Univer provider activation deferred:', error);
+        }
+    }
     // ── Register business capabilities ───────────────────────────────────────
     // Tools must receive a workspace from their DealPilot session context.
     const toolCtx = { config: { requireDealPilotSession: true } };
@@ -120,7 +131,19 @@ export function apply(ctx) {
         registerActionTool(toolCtx, harness);
         registerSearchTool(toolCtx, harness);
         registerWhatsappTool(toolCtx, harness);
-        registerCanonicalImportTools(toolCtx, harness, ctx.univer);
+        let canonicalRegistered = false;
+        const registerCanonical = (serviceCtx) => {
+            if (canonicalRegistered)
+                return;
+            canonicalRegistered = true;
+            registerCanonicalImportTools(toolCtx, harness, serviceCtx?.univer || ctx.univer);
+        };
+        if (ctx.univer)
+            registerCanonical(ctx);
+        else if (typeof ctx.inject === 'function')
+            ctx.inject(['univer'], registerCanonical);
+        else
+            registerCanonical(ctx);
         registerAgentMemoryTools(toolCtx, harness);
         registerFeedbackTools(toolCtx, harness);
         console.log('[dealpilot] registered DealPilot Agent-Native capabilities');
@@ -147,7 +170,7 @@ export function apply(ctx) {
                 try {
                     dispose();
                 }
-                catch { }
+                catch { /* route may already be gone */ }
             }
         }, 'dealpilot dashboard routes');
         const json = (res, status, value) => {

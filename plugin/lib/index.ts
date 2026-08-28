@@ -18,6 +18,7 @@ import { registerWhatsappTool } from './whatsapp-tool.js';
 import { registerFeedbackTools } from './feedback-tool.js';
 import { createToolHarness } from './tool-compat.js';
 import { readGoalRuntime } from './goal-runtime.js';
+import { normalizeRef, readYamlFrontmatter } from './okf-utils.js';
 import {
   createDealPilotSession,
   getDealPilotSession,
@@ -119,7 +120,22 @@ export function apply(ctx: Record<string, any>) {
 
   // ── Register Dashboard HTTP routes ───────────────────────────────────────
   ctx.inject?.(['webServer'], (hostCtx: any) => {
-    const { webServer } = hostCtx;
+    const rawWebServer = hostCtx.webServer;
+    // Route registration is an external resource. Keep every disposer on the
+    // plugin fiber so injector hot reloads cannot leave duplicate routes.
+    const routeDisposers: Array<() => void> = [];
+    const webServer = {
+      register(route: any) {
+        const dispose = rawWebServer.register(route);
+        if (typeof dispose === 'function') routeDisposers.push(dispose);
+        return dispose;
+      },
+    };
+    ctx.effect?.(() => () => {
+      for (const dispose of routeDisposers.splice(0).reverse()) {
+        try { dispose(); } catch { /* route may already be gone */ }
+      }
+    }, 'dealpilot dashboard routes');
 
     const json = (res: any, status: number, value: any) => {
       res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -183,6 +199,23 @@ export function apply(ctx: Record<string, any>) {
     webServer.register({
       kind: 'exact', path: '/api/dealpilot/workspaces/inspect',
       handler: async (req: any, res: any) => { try { const input = await body(req); await syncDshWorkspaceRegistry(req); const result = await inspectWorkspace(String(input.workspaceId || '')); json(res, result.status === 'invalid' ? 400 : 200, result); } catch (err: any) { json(res, 400, { error: err.message }); } },
+    });
+    webServer.register({
+      kind: 'exact', path: '/api/dealpilot/memory',
+      handler: async (req: any, res: any) => {
+        try {
+          if (req.method !== 'GET') return json(res, 405, { error: 'Method not allowed' });
+          await syncDshWorkspaceRegistry(req);
+          const url = new URL(req.url || '/', 'http://dealpilot.local');
+          const workspace = workspacePathFromId(url.searchParams.get('workspaceId') || '');
+          if (!workspace) return json(res, 400, { error: 'Invalid workspaceId' });
+          const requested = String(url.searchParams.get('ref') || '');
+          if (!requested.startsWith('knowledge/') || !requested.endsWith('.md')) return json(res, 400, { error: 'Invalid memory ref' });
+          const ref = normalizeRef(workspace, 'knowledge/index.md', requested);
+          const document = await readYamlFrontmatter(path.join(workspace, ref));
+          json(res, 200, { ref, metadata: document.meta, content: document.body });
+        } catch (err: any) { json(res, 400, { error: err.message }); }
+      },
     });
     webServer.register({
       kind: 'exact', path: '/api/dealpilot/workspaces/initialize',

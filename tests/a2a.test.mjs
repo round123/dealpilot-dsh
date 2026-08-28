@@ -33,7 +33,7 @@ const snapshot = {
   customers: [{
     ref: 'knowledge/customers/acme.md', title: 'Acme Corp', status: 'active',
     source_category: 'import', relationship_stage: 'qualified', icp_fit: 'high',
-    priority: 'P1', contacts: [],
+    priority: 'P1', contacts: [], memory_excerpt: '# Profile\nCached summary that should remain a fallback only.',
   }],
   deals: [{
     ref: 'knowledge/deals/acme.md', title: 'Acme Renewal', customer_name: 'Acme Corp',
@@ -113,6 +113,9 @@ test('DealPilot client exposes the business workbench interaction contract', asy
     '工作区设置',
     'refreshSessionHistory',
     'displayTitle',
+    'api/dealpilot/memory',
+    '时间线',
+    '关联交易',
     'dealpilot_ingest',
     'dealpilot_read',
     'dealpilot_propose',
@@ -157,6 +160,9 @@ test('route client mounts the persistent business context and full workbench in 
     if (req.url?.startsWith('/api/dealpilot/snapshot')) {
       res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(snapshot)); return;
     }
+    if (req.url?.startsWith('/api/dealpilot/memory')) {
+      res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ref: 'knowledge/customers/acme.md', metadata: { title: 'Acme Corp' }, content: '# Profile\n\nIndustrial automation buyer.' })); return;
+    }
     if (req.url?.startsWith('/api/dealpilot/import/source') && req.method === 'POST') {
       const chunks = []; for await (const chunk of req) chunks.push(chunk);
       const name = req.headers['x-file-name'] || 'upload.csv';
@@ -192,6 +198,10 @@ test('route client mounts the persistent business context and full workbench in 
     await page.getByLabel('销售工作台导航').getByRole('button', { name: '客户', exact: true }).click();
     await page.getByRole('button', { name: /Acme Corp/ }).click();
     assert.match(await page.locator('.dealpilot-board-detail').textContent(), /关系阶段/);
+    assert.match(await page.locator('.dealpilot-board-detail').textContent(), /关键事实/);
+    assert.match(await page.locator('.dealpilot-board-detail').textContent(), /时间线/);
+    assert.match(await page.locator('.dealpilot-board-detail').textContent(), /Industrial automation buyer/);
+    assert.doesNotMatch(await page.locator('.dealpilot-board-detail').textContent(), /Cached summary/);
     assert.equal(await page.getByLabel('排序当前视图').isVisible(), true);
     await page.getByRole('button', { name: '关闭完整工作台' }).click();
     await page.getByRole('button', { name: '收起业务上下文' }).click();

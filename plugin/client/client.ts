@@ -126,7 +126,10 @@ function mountDealPilot(runtime: any) {
   const memoryCache = new Map<string, any>();
 
   const api = async (url: string, options?: RequestInit) => {
-    const response = await fetch(url, options);
+    const sessionId = sessionStorage.getItem('dealpilot.sessionId') || '';
+    const headers = new Headers(options?.headers || {});
+    if (sessionId) headers.set('x-dealpilot-session-id', sessionId);
+    const response = await fetch(url, { ...options, headers });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     return data;
@@ -212,7 +215,7 @@ function mountDealPilot(runtime: any) {
     if (view === 'customers') return `请分析客户“${title}”的当前状态，并给出下一步销售建议。引用当前销售工作区的事实，不要猜测未知信息。`;
     if (view === 'deals') return `请分析交易“${title}”（客户：${item.customer_name || '未知'}），重点说明当前风险、漏斗阶段和下一步行动。`;
     if (view === 'risk' || view === 'stalled') return `请分析交易“${title}”（客户：${item.customer_name || '未知'}），说明风险或停滞原因，并给出下一步行动建议。`;
-    if (view === 'actions' || view === 'today') return `请处理跟进任务“${title}”（${item.customer_name || ''} / ${item.deal_title || ''}）。先确认事实，再告诉我是否需要完成、延期或阻塞。`;
+    if (view === 'actions' || view === 'today') return `请读取跟进任务“${title}”（${item.customer_name || ''} / ${item.deal_title || ''}）的当前证据和状态。若需要改变它，请生成带依据的 action change-set，展示 before/after 后再请求用户批准。`;
     return `请解释这条业务记录，并说明它对当前销售工作的影响：${title}。`;
   };
   const sendToConversation = (prompt: string) => {
@@ -366,10 +369,13 @@ function mountDealPilot(runtime: any) {
     const upload = async (file: File) => {
       result.textContent = '正在上传资料...';
       try {
-        const response = await fetch(`/api/dealpilot/import/source?workspaceId=${encodeURIComponent(selectedId)}`, { method: 'POST', headers: { 'content-type': file.type || 'application/octet-stream', 'x-file-name': encodeURIComponent(file.name) }, body: file });
+        const sessionId = sessionStorage.getItem('dealpilot.sessionId') || '';
+        const response = await fetch(`/api/dealpilot/import/source?workspaceId=${encodeURIComponent(selectedId)}`, { method: 'POST', headers: { 'content-type': file.type || 'application/octet-stream', 'x-file-name': encodeURIComponent(file.name), ...(sessionId ? { 'x-dealpilot-session-id': sessionId } : {}) }, body: file });
         const source = await response.json(); if (!response.ok) throw new Error(source.error || '上传失败');
+        const sourceSpec = source.source && typeof source.source === 'object' ? source.source : { kind: 'workspace_file', path: source.source_ref };
+        const sourceJson = JSON.stringify(sourceSpec);
         result.innerHTML = `<strong>已上传 ${escapeHtml(source.originalName)}</strong><span>已准备读取证据</span><button type="button" data-artifact-chat>让 Agent 阅读资料</button>`;
-        result.querySelector('[data-artifact-chat]')?.addEventListener('click', () => sendToConversation(`请使用 dealpilot_ingest 获取这份资料，随后使用 dealpilot_read 阅读完整内容和来源。请根据证据说明你的理解、发现的额外信息和不确定性；如需写入工作区，使用 dealpilot_propose 生成可审阅提案，得到确认后使用 dealpilot_apply。`));
+        result.querySelector('[data-artifact-chat]')?.addEventListener('click', () => sendToConversation(`请使用 dealpilot_ingest，并将 source 精确设置为 ${sourceJson}，不要猜测或改写路径。随后用 dealpilot_read 分页阅读全部 evidence/v2 观察和来源。为每个 observation 记录 mapped、unresolved 或 ignored 的 interpretation，再根据证据生成可审阅 change-set；只有用户批准具体变更后才使用 dealpilot_apply。`));
       } catch (err: any) { result.textContent = err.message; }
     };
     content.querySelector('[data-import-file]')?.addEventListener('change', async () => {
@@ -445,12 +451,17 @@ function mountDealPilot(runtime: any) {
     else contextPanel.hidden = false;
   }
 
-  const getSessions = () => runtime.sessions || runtime.get('sessions');
-  const getWorkspaces = () => runtime.workspaces || runtime.get('workspaces');
+  // DSH keeps module-graph dependencies (`dsh.client.inject`) separate from
+  // Cordis service declarations. Resolve the service face through `get()` so
+  // this client remains compatible with hosts that expose a guarded context
+  // proxy while still failing explicitly when the provider is unavailable.
+  const getService = (name: string) => typeof runtime?.get === 'function' ? runtime.get(name) : undefined;
+  const getSessions = () => getService('sessions');
+  const getWorkspaces = () => getService('workspaces');
   // Keep the host session catalog intact. The selection storage bridge below
   // scopes only the active-session key, while restoreSession() explicitly opens
   // the saved DealPilot session after the selected Workspace is known.
-  const getConnection = () => runtime.connection || runtime.get('connection');
+  const getConnection = () => getService('connection');
   const refreshSessionHistory = async () => {
     if (!selectedId) return;
     const sessionList = panel.querySelector<HTMLElement>('[data-sessions]')!;
@@ -539,10 +550,21 @@ function mountDealPilot(runtime: any) {
     await refreshSessionHistory();
     await refreshSnapshot();
   };
-  const bindSession = async (workspaceId: string) => {
-    let dshSessionId = '';
-    dshSessionId = await createNativeSession(workspaceId);
+  const bindSession = async (workspaceId: string, existingNativeSessionId = '') => {
+    let dshSessionId = existingNativeSessionId;
+    if (!dshSessionId) dshSessionId = await createNativeSession(workspaceId);
     const session = await api('/api/dealpilot/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceId, dshSessionId: dshSessionId || undefined }) });
+    // The bootstrap path creates the native session through the host bridge,
+    // so perform the same client-side projection that the local sessions
+    // service normally performs in createNativeSession().
+    if (existingNativeSessionId) {
+      const sessions = getSessions();
+      await sessions?.refresh?.();
+      if (sessions?.noteAgentPreset) sessions.noteAgentPreset(dshSessionId, 'dealpilot-sales');
+      if (sessions?.open) sessions.open(dshSessionId);
+      projectedSessionId = dshSessionId;
+      projectDealPilotWorkspace(workspaceId, dshSessionId);
+    }
     sessionStorage.setItem('dealpilot.sessionId', session.sessionId);
     sessionStorage.setItem('dealpilot.workspaceId', workspaceId);
     await enterReadyState(session, workspaceId);
@@ -578,6 +600,8 @@ function mountDealPilot(runtime: any) {
     try {
       inspection = await api('/api/dealpilot/workspaces/inspect', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceId: id }) });
       if (version !== inspectVersion) return;
+      const savedWorkspace = sessionStorage.getItem('dealpilot.workspaceId');
+      if (savedWorkspace && savedWorkspace !== id) sessionStorage.removeItem('dealpilot.sessionId');
       if (inspection.status === 'new') { setStatus('这是一个新工作区。初始化只会创建 DealPilot 所需目录，不会覆盖现有文件。'); initializeButton.hidden = false; return; }
       setStatus('已检测到现有销售资料，正在进入...');
       if (!(await restoreSession(id)) && version === inspectVersion) await bindSession(id);
@@ -696,11 +720,17 @@ function mountDealPilot(runtime: any) {
   initializeButton.addEventListener('click', async () => {
     initializeButton.disabled = true; setStatus('正在初始化 DealPilot...');
     try {
-      const initialized = await api('/api/dealpilot/workspaces/initialize', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceId: selectedId }) });
-      // A newly adopted directory receives a canonical DSH workspace id.
-      // Continue with that id so native session.create can attach to it.
+      sessionStorage.removeItem('dealpilot.sessionId');
+      // Create the native session first so the bootstrap mutation can be
+      // proven to belong to this exact DSH Workspace.
+      const native = await api('/api/dealpilot/native-session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceId: selectedId, bootstrap: true }) });
+      const nativeSessionId = String(native.sessionId || '');
+      if (!nativeSessionId) throw new Error('DSH 未返回会话 id');
+      const initialized = await api('/api/dealpilot/workspaces/initialize', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceId: selectedId, dshSessionId: nativeSessionId, bootstrap: true }) });
+      // A newly adopted directory keeps its DSH Workspace id; bind the
+      // already-created native session after the directory is prepared.
       selectedId = String(initialized.workspaceId || selectedId);
-      await bindSession(selectedId);
+      await bindSession(selectedId, nativeSessionId);
     }
     catch (err: any) { setStatus(err.message, true); }
     finally { initializeButton.disabled = false; }
@@ -797,7 +827,18 @@ function registerDealPilotToolViews(runtime: any): void {
     order: 1000,
   }, () => null));
 
-  const keys = ['dealpilot_snapshot', 'dealpilot_search', 'dealpilot_write', 'dealpilot_action_transition', 'dealpilot_ingest', 'dealpilot_read', 'dealpilot_propose', 'dealpilot_apply'];
+  const keys = [
+    'dealpilot_snapshot',
+    'dealpilot_search',
+    'dealpilot_whatsapp',
+    'dealpilot_ingest',
+    'dealpilot_read',
+    'dealpilot_record_interpretation',
+    'dealpilot_propose',
+    'dealpilot_apply',
+    'dealpilot_feedback_create',
+    'dealpilot_feedback_submit',
+  ];
   slots.inject('tool.call.toolview', () => function* registerViews() {
     for (const key of keys) {
       yield slots.register({ name: 'tool.call.toolview', key, locale: 'dealpilot' }, (props: any) =>
@@ -828,8 +869,8 @@ function createDealPilotToolRow(React: any, props: any): any {
       meta?.count !== undefined ? React.createElement('span', { className: 'dealpilot-toolview-count' }, `${meta.count} 条`) : null),
   ];
   if (summary) children.push(React.createElement('p', { className: 'dealpilot-toolview-summary', key: 'summary' }, summary));
-  if (meta?.view === 'confirmation') {
-    children.push(React.createElement('p', { className: 'dealpilot-toolview-confirmation', key: 'confirmation' }, '需要用户确认后才会写入工作区。'));
+  if (meta?.view === 'approval' || block?.result?.requires_approval) {
+    children.push(React.createElement('p', { className: 'dealpilot-toolview-approval', key: 'approval' }, '需要用户审阅具体变更及其依据后批准。'));
   } else if (items.length) {
     children.push(React.createElement('div', { className: 'dealpilot-toolview-items', key: 'items' }, items.slice(0, 6).map((item: any, index: number) =>
       React.createElement('button', { type: 'button', className: 'dealpilot-toolview-item', key: `${item.ref || item.title || index}`, onClick: () => open(item) },

@@ -5,8 +5,11 @@
   "type": "module",
   "main": "lib/index.js",
   "scripts": {
+    "build:client": "node ../scripts/build-client.mjs",
+    "build": "tsc && pnpm run build:client",
     "test:a2a": "node --test ../tests/a2a.test.mjs",
-    "test:all": "node --test ../tests/*.test.mjs",
+    "test:core": "node --test ../tests/evidence-import-v2.test.mjs ../tests/contracts-v2.test.mjs ../tests/mutation-kernel.test.mjs",
+    "test:all": "pnpm run test:core",
     "a2a:server": "node ../tests/a2a-server.mjs"
   },
   "exports": {
@@ -33,7 +36,8 @@
   "dependencies": {
     "dsh-univer-office": "^0.2.10",
     "dsh-file-upload": "^0.4.3",
-    "js-yaml": "^4.1.0"
+    "js-yaml": "^4.1.0",
+    "exceljs": "^4.4.0"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
@@ -44,7 +48,6 @@
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.0.0",
     "@types/react": "~18.3.1",
-    "exceljs": "^4.4.0",
     "playwright": "^1.55.0",
     "react": "^18.3.1",
     "typescript": "^5.5.0"

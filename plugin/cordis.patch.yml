@@ -1,7 +1,6 @@
-# DealPilot DSH — cordis patch
-# Inserts the dealpilot plugin into the DSH host composition.
-# When installed as a bundle, this registers 6 business tools
-# that are available to the DealPilot agent preset.
+# DealPilot DSH Cordis patch.
+# Registers evidence ingestion and reading, interpretation recording,
+# reviewable change sets, scoped approval, and transactional application.
 - insert:
     - id: dealpilot
       name: 'dealpilot-dsh'

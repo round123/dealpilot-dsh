@@ -4,13 +4,12 @@
 
 import * as fs from 'node:fs/promises';
 import { copyFileSync, mkdirSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildSnapshot } from './snapshot.js';
 import { ensureWorkspace, listWorkspaces, inspectWorkspace, workspacePathFromId, registerWorkspacePath, defaultWorkspacePath } from './workspace-manager.js';
 import { registerSnapshotTool } from './snapshot.js';
-import { registerWriteTool } from './write-tool.js';
-import { registerActionTool } from './action-tool.js';
 import { registerCanonicalImportTools } from './canonical-import.js';
 import { registerAgentMemoryTools } from './agent-memory.js';
 import { registerSearchTool } from './search-tool.js';
@@ -30,9 +29,38 @@ import { apply as applyUniverOffice } from 'dsh-univer-office';
 
 // DealPilot owns the file-capability dependency in its distributable package.
 // The host must not require a separately installed top-level Univer bundle.
-export const inject = ['tools'];
+// Evidence conversion uses the host's Univer capability. Declare both
+// services up front so Cordis resolves the complete dependency graph before
+// the capability registration begins.
+export const inject = ['tools', 'univer'];
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// A DealPilot session has a narrower authority than the host's general tool
+// catalog.  Preset visibility is advisory: globally installed filesystem or
+// Univer tools can still be present after a hot reload or in a composed host.
+// Keep the actual boundary in the monotonic tool guard as well, so business
+// state can only be changed through evidence -> interpretation -> change-set.
+const DEALPILOT_BLOCKED_TOOLS = new Set([
+  'write', 'edit', 'delete', 'remove', 'move', 'copy', 'mkdir', 'rm',
+  'read', 'glob', 'grep', 'write_file', 'edit_file', 'delete_file',
+  'dealpilot_write', 'dealpilot_action_transition',
+  'univer_new', 'univer_unit', 'univer_import', 'univer_execute', 'univer_worktree',
+]);
+
+function installDealPilotCapabilityGuard(ctx: Record<string, any>): void {
+  if (typeof ctx.tools?.guard !== 'function') return;
+  const dispose = ctx.tools.guard((exec: any) => {
+    const sessionId = exec?.agent?.id;
+    if (!getDealPilotSession(sessionId)) return undefined;
+    const name = String(exec?.name || '');
+    if (!DEALPILOT_BLOCKED_TOOLS.has(name)) return undefined;
+    return `DealPilot session cannot call ${name}; use the typed DealPilot evidence and change-set capabilities.`;
+  });
+  ctx.effect?.(() => () => {
+    try { dispose?.(); } catch { /* the host may already have disposed this layer */ }
+  }, 'dealpilot capability guard');
+}
 
 async function readDshFrontendIndex(req?: any): Promise<string> {
   if (req?.headers?.host) {
@@ -101,6 +129,97 @@ async function createDshSession(req: any, workspacePath: string): Promise<{ sess
   return { sessionId: String(value.sessionId), agentPreset: value.agentPreset };
 }
 
+function requestHeader(req: any, name: string): string {
+  const value = req?.headers?.[name.toLowerCase()];
+  return Array.isArray(value) ? String(value[0] || '') : String(value || '');
+}
+
+function isLoopbackAddress(value: unknown): boolean {
+  const address = String(value || '').replace(/^\[|\]$/gu, '').toLowerCase();
+  return !address || address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+}
+
+/**
+ * Bootstrap mutates a selected DSH Workspace before a DealPilot session
+ * exists. Keep that one lifecycle exception explicitly host-local; all later
+ * writes use the bound-session check below.
+ */
+function requireHostLocalBootstrap(req: any): void {
+  const remote = req?.socket?.remoteAddress ?? req?.connection?.remoteAddress;
+  if (!isLoopbackAddress(remote)) {
+    const error: any = new Error('DealPilot bootstrap 只能由本机 DSH host 发起');
+    error.statusCode = 403;
+    throw error;
+  }
+}
+
+/** Bind HTTP mutations to the DealPilot session that owns the Workspace. */
+function requireBoundHttpSession(req: any, workspaceId: string): ReturnType<typeof getDealPilotSession> {
+  const sessionId = requestHeader(req, 'x-dealpilot-session-id');
+  const session = getDealPilotSession(sessionId);
+  if (!session) {
+    const error: any = new Error('需要当前 DealPilot session 才能执行该操作');
+    error.statusCode = 403;
+    throw error;
+  }
+  if (session.workspaceId !== workspaceId) {
+    const error: any = new Error('当前 session 未绑定请求的 Workspace');
+    error.statusCode = 403;
+    throw error;
+  }
+  return session;
+}
+
+/**
+ * Verify that a native DSH session was created for this exact Workspace. The
+ * host session store is authoritative when available; the local map covers
+ * compatibility hosts that expose only the HTTP session-create bridge.
+ */
+const nativeSessionWorkspaces = new Map<string, string>();
+
+async function requireNativeSessionWorkspace(hostCtx: any, sessionId: string, workspacePath: string): Promise<void> {
+  if (!sessionId) throw new Error('需要 native DSH session id');
+  // Cordis guards direct reads for services that are not in this plugin's
+  // dependency list. Resolve the optional service through the public lookup
+  // APIs so bootstrap remains compatible with hosts that expose only the HTTP
+  // session bridge.
+  let sessions: any;
+  try {
+    if (typeof hostCtx?.get === 'function') sessions = hostCtx.get('sessions');
+  } catch { /* optional service is not injected on this host */ }
+  if (!sessions) {
+    try { sessions = hostCtx?.reflect?.get?.('sessions', false); } catch { /* optional service is absent */ }
+  }
+  const native = typeof sessions?.get === 'function' ? sessions.get(sessionId) : undefined;
+  if (native) {
+    const cwd = native.header?.cwd || native.cwd || native.meta?.cwd;
+    if (typeof cwd !== 'string' || !cwd) throw new Error('native DSH session 缺少 Workspace cwd');
+    let actualWorkspace: string;
+    let actualCwd: string;
+    try {
+      [actualWorkspace, actualCwd] = await Promise.all([fs.realpath(workspacePath), fs.realpath(cwd)]);
+    } catch {
+      actualWorkspace = path.resolve(workspacePath);
+      actualCwd = path.resolve(cwd);
+    }
+    const normalize = (value: string) => process.platform === 'win32' ? value.toLowerCase() : value;
+    if (normalize(actualWorkspace) !== normalize(actualCwd)) throw new Error('native DSH session 未绑定请求的 Workspace');
+    nativeSessionWorkspaces.set(sessionId, actualWorkspace);
+    return;
+  }
+  const known = nativeSessionWorkspaces.get(sessionId);
+  if (known) {
+    const expected = path.resolve(workspacePath);
+    const normalize = (value: string) => process.platform === 'win32' ? value.toLowerCase() : value;
+    if (normalize(known) !== normalize(expected)) throw new Error('native DSH session 未绑定请求的 Workspace');
+    return;
+  }
+  // A host without an inspectable session service is still allowed to use the
+  // DSH HTTP bridge, but only from the loopback bootstrap boundary.
+  if (!sessions) return;
+  throw new Error('找不到请求的 native DSH session');
+}
+
 export function apply(ctx: Record<string, any>) {
   installDealPilotPreset();
   const existingUniver = ctx.reflect?.get?.('univer', false);
@@ -112,9 +231,8 @@ export function apply(ctx: Record<string, any>) {
   const toolCtx = { config: { requireDealPilotSession: true } };
   const harness = createToolHarness(ctx, toolCtx);
   if (ctx.tools?.register) {
+    installDealPilotCapabilityGuard(ctx);
     registerSnapshotTool(toolCtx, harness);
-    registerWriteTool(toolCtx, harness);
-    registerActionTool(toolCtx, harness);
     registerSearchTool(toolCtx, harness);
     registerWhatsappTool(toolCtx, harness);
     let canonicalRegistered = false;
@@ -126,8 +244,8 @@ export function apply(ctx: Record<string, any>) {
     if (ctx.reflect?.get?.('univer', false)) registerCanonical(ctx);
     else if (typeof ctx.inject === 'function') ctx.inject(['univer'], registerCanonical);
     else registerCanonical(ctx);
-    registerAgentMemoryTools(toolCtx, harness);
-    registerFeedbackTools(toolCtx, harness);
+    registerAgentMemoryTools(toolCtx, harness, ctx);
+    registerFeedbackTools(toolCtx, harness, ctx);
     console.log('[dealpilot] registered DealPilot Agent-Native capabilities');
   } else {
     console.warn('[dealpilot] tools service not available — tools not registered');
@@ -181,21 +299,32 @@ export function apply(ctx: Record<string, any>) {
       kind: 'exact', path: '/api/dealpilot/import/source',
       handler: async (req: any, res: any) => {
         try {
+          if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' });
           await syncDshWorkspaceRegistry(req);
           const url = new URL(req.url || '/', 'http://dealpilot.local');
-          const workspace = workspacePathFromId(url.searchParams.get('workspaceId') || '');
+          const workspaceId = url.searchParams.get('workspaceId') || '';
+          const boundSession = requireBoundHttpSession(req, workspaceId);
+          const workspace = workspacePathFromId(workspaceId);
           if (!workspace) return json(res, 400, { error: 'Invalid workspaceId' });
-          if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' });
           const encodedName = String(req.headers?.['x-file-name'] || 'upload.bin');
           let originalName = encodedName;
           try { originalName = decodeURIComponent(encodedName); } catch { /* retain the encoded fallback */ }
-          const name = originalName.replace(/[^a-zA-Z0-9._-]/g, '_');
-          const relative = `sources/imports/uploads/${Date.now()}-${name}`;
+          const name = originalName.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 160) || 'upload.bin';
+          const relative = `sources/imports/uploads/${randomUUID()}-${name}`;
           const target = path.join(workspace, relative);
+          const bytes = await rawBody(req);
           await fs.mkdir(path.dirname(target), { recursive: true });
-          await fs.writeFile(target, await rawBody(req));
-          return json(res, 201, { source: { kind: 'workspace_file', path: relative }, originalName: name });
-        } catch (err: any) { json(res, 400, { error: err.message }); }
+          await fs.writeFile(target, bytes, { flag: 'wx', mode: 0o600 });
+          const sha256 = createHash('sha256').update(bytes).digest('hex');
+          return json(res, 201, {
+            source: { kind: 'workspace_file', path: relative },
+            source_ref: relative,
+            upload_id: path.basename(relative, path.extname(relative)),
+            sha256,
+            session_id: boundSession?.sessionId,
+            originalName: name,
+          });
+        } catch (err: any) { json(res, err?.statusCode || 400, { error: err.message }); }
       },
     });
     webServer.register({
@@ -222,31 +351,45 @@ export function apply(ctx: Record<string, any>) {
           if (req.method !== 'GET') return json(res, 405, { error: 'Method not allowed' });
           await syncDshWorkspaceRegistry(req);
           const url = new URL(req.url || '/', 'http://dealpilot.local');
-          const workspace = workspacePathFromId(url.searchParams.get('workspaceId') || '');
+          const workspaceId = url.searchParams.get('workspaceId') || '';
+          requireBoundHttpSession(req, workspaceId);
+          const workspace = workspacePathFromId(workspaceId);
           if (!workspace) return json(res, 400, { error: 'Invalid workspaceId' });
           const requested = String(url.searchParams.get('ref') || '');
           if (!requested.startsWith('knowledge/') || !requested.endsWith('.md')) return json(res, 400, { error: 'Invalid memory ref' });
           const ref = normalizeRef(workspace, 'knowledge/index.md', requested);
           const document = await readYamlFrontmatter(path.join(workspace, ref));
           json(res, 200, { ref, metadata: document.meta, content: document.body });
-        } catch (err: any) { json(res, 400, { error: err.message }); }
+        } catch (err: any) { json(res, err?.statusCode || 400, { error: err.message }); }
       },
     });
     webServer.register({
       kind: 'exact', path: '/api/dealpilot/workspaces/initialize',
       handler: async (req: any, res: any) => { try {
         const input = await body(req);
+        if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' });
+        const requestSessionId = requestHeader(req, 'x-dealpilot-session-id');
+        const bound = requestSessionId ? getDealPilotSession(requestSessionId) : undefined;
+        if (requestSessionId && !bound) return json(res, 403, { error: '需要有效的 DealPilot session' });
+        if (input.bootstrap === true) requireHostLocalBootstrap(req);
+        else if (!bound) return json(res, 403, { error: '首次初始化必须通过受控 bootstrap' });
         await syncDshWorkspaceRegistry(req);
-        const workspace = workspacePathFromId(String(input.workspaceId || ''));
+        const workspaceId = String(input.workspaceId || '');
+        if (bound && bound.workspaceId !== workspaceId) return json(res, 403, { error: '当前 session 未绑定请求的 Workspace' });
+        const workspace = workspacePathFromId(workspaceId);
         if (!workspace) return json(res, 400, { error: 'Invalid workspaceId' });
+        if (input.bootstrap === true) {
+          if (!input.dshSessionId) return json(res, 400, { error: 'bootstrap 需要 native DSH session id' });
+          await requireNativeSessionWorkspace(hostCtx, String(input.dshSessionId), workspace);
+        }
         const state = await ensureWorkspace(workspace);
         json(res, 200, {
           ...state,
           path: undefined,
-          workspaceId: input.workspaceId,
+          workspaceId,
           workspaceName: state.metadata.name,
         });
-      } catch (err: any) { json(res, 400, { error: err.message }); } },
+        } catch (err: any) { json(res, err?.statusCode || 400, { error: err.message }); } },
     });
     webServer.register({
       kind: 'exact', path: '/api/dealpilot/workspaces/archive',
@@ -254,15 +397,17 @@ export function apply(ctx: Record<string, any>) {
         try {
           const input = await body(req);
           await syncDshWorkspaceRegistry(req);
-          const workspace = workspacePathFromId(String(input.workspaceId || ''));
+          const workspaceId = String(input.workspaceId || '');
+          const boundSession = requireBoundHttpSession(req, workspaceId);
+          const workspace = workspacePathFromId(workspaceId);
           if (!workspace) return json(res, 400, { error: 'Invalid workspaceId' });
           const metadataPath = path.join(workspace, '.dsh', 'workspace.json');
           const metadata = JSON.parse(await fs.readFile(metadataPath, 'utf8'));
           metadata.setup_status = 'archived';
           metadata.archived_at = new Date().toISOString();
           await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2) + '\n', 'utf8');
-          json(res, 200, { id: input.workspaceId, status: 'archived' });
-        } catch (err: any) { json(res, 400, { error: err.message }); }
+          json(res, 200, { id: workspaceId, status: 'archived', session_id: boundSession?.sessionId });
+        } catch (err: any) { json(res, err?.statusCode || 400, { error: err.message }); }
       },
     });
 
@@ -270,28 +415,42 @@ export function apply(ctx: Record<string, any>) {
       kind: 'exact', path: '/api/dealpilot/session',
       handler: async (req: any, res: any) => {
         try {
+          if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' });
+          requireHostLocalBootstrap(req);
           const input = await body(req);
           await syncDshWorkspaceRegistry(req);
-          const session = await createDealPilotSession(String(input.workspaceId || ''), input.dshSessionId ? String(input.dshSessionId) : undefined);
+          const workspaceId = String(input.workspaceId || '');
+          const workspace = workspacePathFromId(workspaceId);
+          if (!workspace) return json(res, 400, { error: 'Invalid workspaceId' });
+          const requestSessionId = requestHeader(req, 'x-dealpilot-session-id');
+          const bound = requestSessionId ? getDealPilotSession(requestSessionId) : undefined;
+          if (requestSessionId && (!bound || bound.workspaceId !== workspaceId)) return json(res, 403, { error: '当前 session 未绑定请求的 Workspace' });
+          const dshSessionId = input.dshSessionId ? String(input.dshSessionId) : '';
+          if (!dshSessionId) return json(res, 400, { error: '需要 native DSH session id' });
+          await requireNativeSessionWorkspace(hostCtx, dshSessionId, workspace);
+          const session = await createDealPilotSession(workspaceId, dshSessionId);
           json(res, 200, publicDealPilotSession(session));
-        } catch (err: any) { json(res, 400, { error: err.message }); }
+        } catch (err: any) { json(res, err?.statusCode || 400, { error: err.message }); }
       },
     });
     webServer.register({
       kind: 'exact', path: '/api/dealpilot/native-session',
       handler: async (req: any, res: any) => {
         try {
+          if (req.method !== 'POST') return json(res, 405, { error: 'Method not allowed' });
+          requireHostLocalBootstrap(req);
           const input = await body(req);
           await syncDshWorkspaceRegistry(req);
           const workspaceId = String(input.workspaceId || '');
           const workspace = workspacePathFromId(workspaceId);
           if (!workspace) return json(res, 400, { error: 'Invalid workspaceId' });
           const inspection = await inspectWorkspace(workspaceId, workspace);
-          if (inspection.status === 'new') return json(res, 409, { error: '请先初始化 DealPilot Workspace' });
+          if (inspection.status === 'new' && input.bootstrap !== true) return json(res, 409, { error: '请先初始化 DealPilot Workspace' });
           if (inspection.status === 'archived') return json(res, 409, { error: 'Workspace 已归档，不能创建 DealPilot 对话' });
           const session = await createDshSession(req, workspace);
+          nativeSessionWorkspaces.set(session.sessionId, path.resolve(workspace));
           json(res, 200, { workspaceId, ...session });
-        } catch (err: any) { json(res, 400, { error: err.message }); }
+        } catch (err: any) { json(res, err?.statusCode || 400, { error: err.message }); }
       },
     });
     webServer.register({
@@ -317,11 +476,20 @@ export function apply(ctx: Record<string, any>) {
         }
         if (req.method === 'POST' && parts[parts.length - 1] === 'workspace') {
           try {
+            requireHostLocalBootstrap(req);
+            const requestSessionId = requestHeader(req, 'x-dealpilot-session-id');
+            if (requestSessionId !== id) return json(res, 403, { error: '请求 session 与 URL session 不一致' });
             const input = await body(req);
             await syncDshWorkspaceRegistry(req);
-            const session = await switchDealPilotWorkspace(id, String(input.workspaceId || ''), input.dshSessionId ? String(input.dshSessionId) : undefined);
+            const workspaceId = String(input.workspaceId || '');
+            const workspace = workspacePathFromId(workspaceId);
+            if (!workspace) return json(res, 400, { error: 'Invalid workspaceId' });
+            const dshSessionId = input.dshSessionId ? String(input.dshSessionId) : '';
+            if (!dshSessionId) return json(res, 400, { error: '需要 native DSH session id' });
+            await requireNativeSessionWorkspace(hostCtx, dshSessionId, workspace);
+            const session = await switchDealPilotWorkspace(id, workspaceId, dshSessionId);
             return json(res, 200, publicDealPilotSession(session));
-          } catch (err: any) { return json(res, 400, { error: err.message }); }
+          } catch (err: any) { return json(res, err?.statusCode || 400, { error: err.message }); }
         }
         json(res, 405, { error: 'Method not allowed' });
       },
@@ -335,13 +503,15 @@ export function apply(ctx: Record<string, any>) {
         try {
           const url = new URL(req.url || '/', 'http://dealpilot.local');
           await syncDshWorkspaceRegistry(req);
-          const selected = workspacePathFromId(url.searchParams.get('workspaceId') || '');
-          const ws = selected || defaultWorkspacePath();
-          await ensureWorkspace(ws);
-          const snapshot = await buildSnapshot(ws);
+          const workspaceId = url.searchParams.get('workspaceId') || '';
+          requireBoundHttpSession(req, workspaceId);
+          const selected = workspacePathFromId(workspaceId);
+          if (!selected) return json(res, 400, { error: 'Invalid workspaceId' });
+          await ensureWorkspace(selected);
+          const snapshot = await buildSnapshot(selected);
           json(res, 200, snapshot);
         } catch (err: any) {
-          json(res, 500, { error: err.message });
+          json(res, err?.statusCode || 500, { error: err.message });
         }
       },
     });
@@ -350,6 +520,7 @@ export function apply(ctx: Record<string, any>) {
       const url = new URL(req.url || '/', 'http://dealpilot.local');
       await syncDshWorkspaceRegistry(req);
       const workspaceId = url.searchParams.get('workspaceId') || '';
+      requireBoundHttpSession(req, workspaceId);
       const selected = workspacePathFromId(workspaceId);
       if (!selected) throw new Error('Invalid workspaceId');
       return buildSnapshot(selected);
@@ -368,7 +539,7 @@ export function apply(ctx: Record<string, any>) {
         kind: 'exact', path: route,
         handler: async (req: any, res: any) => {
           try { json(res, 200, { data: project(await readWorkspaceSnapshot(req)) }); }
-          catch (err: any) { json(res, 400, { error: err.message }); }
+          catch (err: any) { json(res, err?.statusCode || 400, { error: err.message }); }
         },
       });
     }
@@ -379,7 +550,7 @@ export function apply(ctx: Record<string, any>) {
           const snapshot = await readWorkspaceSnapshot(req);
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Disposition': 'attachment; filename="dealpilot-export.json"' });
           res.end(JSON.stringify(snapshot, null, 2));
-        } catch (err: any) { json(res, 400, { error: err.message }); }
+        } catch (err: any) { json(res, err?.statusCode || 400, { error: err.message }); }
       },
     });
 
@@ -389,13 +560,18 @@ export function apply(ctx: Record<string, any>) {
       path: '/api/dealpilot/bootstrap',
       handler: async (req: any, res: any) => {
         try {
+          if (req.method !== 'GET') return json(res, 405, { error: 'Method not allowed' });
+          // This compatibility endpoint still materializes the default
+          // workspace when it is missing, so keep it inside the host-local
+          // bootstrap boundary even though it is read-only to the Agent.
+          requireHostLocalBootstrap(req);
           const url = new URL(req.url || '/', 'http://dealpilot.local');
           const selected = workspacePathFromId(url.searchParams.get('workspaceId') || '');
           const state = await ensureWorkspace(selected || defaultWorkspacePath());
           const snapshot = await buildSnapshot(state.path);
           json(res, 200, { workspace: state.metadata, created: state.created, snapshot });
         } catch (err: any) {
-          json(res, 500, { error: err.message });
+          json(res, err?.statusCode || 500, { error: err.message });
         }
       },
     });

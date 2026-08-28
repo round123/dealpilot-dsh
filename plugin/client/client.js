@@ -122,7 +122,11 @@ function mountDealPilot(runtime) {
     let detailVersion = 0;
     const memoryCache = new Map();
     const api = async (url, options) => {
-        const response = await fetch(url, options);
+        const sessionId = sessionStorage.getItem('dealpilot.sessionId') || '';
+        const headers = new Headers(options?.headers || {});
+        if (sessionId)
+            headers.set('x-dealpilot-session-id', sessionId);
+        const response = await fetch(url, { ...options, headers });
         const data = await response.json();
         if (!response.ok)
             throw new Error(data.error || `HTTP ${response.status}`);
@@ -255,7 +259,7 @@ function mountDealPilot(runtime) {
         if (view === 'risk' || view === 'stalled')
             return `请分析交易“${title}”（客户：${item.customer_name || '未知'}），说明风险或停滞原因，并给出下一步行动建议。`;
         if (view === 'actions' || view === 'today')
-            return `请处理跟进任务“${title}”（${item.customer_name || ''} / ${item.deal_title || ''}）。先确认事实，再告诉我是否需要完成、延期或阻塞。`;
+            return `请读取跟进任务“${title}”（${item.customer_name || ''} / ${item.deal_title || ''}）的当前证据和状态。若需要改变它，请生成带依据的 action change-set，展示 before/after 后再请求用户批准。`;
         return `请解释这条业务记录，并说明它对当前销售工作的影响：${title}。`;
     };
     const sendToConversation = (prompt) => {
@@ -436,12 +440,15 @@ function mountDealPilot(runtime) {
         const upload = async (file) => {
             result.textContent = '正在上传资料...';
             try {
-                const response = await fetch(`/api/dealpilot/import/source?workspaceId=${encodeURIComponent(selectedId)}`, { method: 'POST', headers: { 'content-type': file.type || 'application/octet-stream', 'x-file-name': encodeURIComponent(file.name) }, body: file });
+                const sessionId = sessionStorage.getItem('dealpilot.sessionId') || '';
+                const response = await fetch(`/api/dealpilot/import/source?workspaceId=${encodeURIComponent(selectedId)}`, { method: 'POST', headers: { 'content-type': file.type || 'application/octet-stream', 'x-file-name': encodeURIComponent(file.name), ...(sessionId ? { 'x-dealpilot-session-id': sessionId } : {}) }, body: file });
                 const source = await response.json();
                 if (!response.ok)
                     throw new Error(source.error || '上传失败');
+                const sourceSpec = source.source && typeof source.source === 'object' ? source.source : { kind: 'workspace_file', path: source.source_ref };
+                const sourceJson = JSON.stringify(sourceSpec);
                 result.innerHTML = `<strong>已上传 ${escapeHtml(source.originalName)}</strong><span>已准备读取证据</span><button type="button" data-artifact-chat>让 Agent 阅读资料</button>`;
-                result.querySelector('[data-artifact-chat]')?.addEventListener('click', () => sendToConversation(`请使用 dealpilot_ingest 获取这份资料，随后使用 dealpilot_read 阅读完整内容和来源。请根据证据说明你的理解、发现的额外信息和不确定性；如需写入工作区，使用 dealpilot_propose 生成可审阅提案，得到确认后使用 dealpilot_apply。`));
+                result.querySelector('[data-artifact-chat]')?.addEventListener('click', () => sendToConversation(`请使用 dealpilot_ingest，并将 source 精确设置为 ${sourceJson}，不要猜测或改写路径。随后用 dealpilot_read 分页阅读全部 evidence/v2 观察和来源。为每个 observation 记录 mapped、unresolved 或 ignored 的 interpretation，再根据证据生成可审阅 change-set；只有用户批准具体变更后才使用 dealpilot_apply。`));
             }
             catch (err) {
                 result.textContent = err.message;
@@ -539,12 +546,17 @@ function mountDealPilot(runtime) {
         else
             contextPanel.hidden = false;
     }
-    const getSessions = () => runtime.sessions || runtime.get('sessions');
-    const getWorkspaces = () => runtime.workspaces || runtime.get('workspaces');
+    // DSH keeps module-graph dependencies (`dsh.client.inject`) separate from
+    // Cordis service declarations. Resolve the service face through `get()` so
+    // this client remains compatible with hosts that expose a guarded context
+    // proxy while still failing explicitly when the provider is unavailable.
+    const getService = (name) => typeof runtime?.get === 'function' ? runtime.get(name) : undefined;
+    const getSessions = () => getService('sessions');
+    const getWorkspaces = () => getService('workspaces');
     // Keep the host session catalog intact. The selection storage bridge below
     // scopes only the active-session key, while restoreSession() explicitly opens
     // the saved DealPilot session after the selected Workspace is known.
-    const getConnection = () => runtime.connection || runtime.get('connection');
+    const getConnection = () => getService('connection');
     const refreshSessionHistory = async () => {
         if (!selectedId)
             return;
@@ -649,10 +661,24 @@ function mountDealPilot(runtime) {
         await refreshSessionHistory();
         await refreshSnapshot();
     };
-    const bindSession = async (workspaceId) => {
-        let dshSessionId = '';
-        dshSessionId = await createNativeSession(workspaceId);
+    const bindSession = async (workspaceId, existingNativeSessionId = '') => {
+        let dshSessionId = existingNativeSessionId;
+        if (!dshSessionId)
+            dshSessionId = await createNativeSession(workspaceId);
         const session = await api('/api/dealpilot/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceId, dshSessionId: dshSessionId || undefined }) });
+        // The bootstrap path creates the native session through the host bridge,
+        // so perform the same client-side projection that the local sessions
+        // service normally performs in createNativeSession().
+        if (existingNativeSessionId) {
+            const sessions = getSessions();
+            await sessions?.refresh?.();
+            if (sessions?.noteAgentPreset)
+                sessions.noteAgentPreset(dshSessionId, 'dealpilot-sales');
+            if (sessions?.open)
+                sessions.open(dshSessionId);
+            projectedSessionId = dshSessionId;
+            projectDealPilotWorkspace(workspaceId, dshSessionId);
+        }
         sessionStorage.setItem('dealpilot.sessionId', session.sessionId);
         sessionStorage.setItem('dealpilot.workspaceId', workspaceId);
         await enterReadyState(session, workspaceId);
@@ -699,6 +725,9 @@ function mountDealPilot(runtime) {
             inspection = await api('/api/dealpilot/workspaces/inspect', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceId: id }) });
             if (version !== inspectVersion)
                 return;
+            const savedWorkspace = sessionStorage.getItem('dealpilot.workspaceId');
+            if (savedWorkspace && savedWorkspace !== id)
+                sessionStorage.removeItem('dealpilot.sessionId');
             if (inspection.status === 'new') {
                 setStatus('这是一个新工作区。初始化只会创建 DealPilot 所需目录，不会覆盖现有文件。');
                 initializeButton.hidden = false;
@@ -848,11 +877,18 @@ function mountDealPilot(runtime) {
         initializeButton.disabled = true;
         setStatus('正在初始化 DealPilot...');
         try {
-            const initialized = await api('/api/dealpilot/workspaces/initialize', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceId: selectedId }) });
-            // A newly adopted directory receives a canonical DSH workspace id.
-            // Continue with that id so native session.create can attach to it.
+            sessionStorage.removeItem('dealpilot.sessionId');
+            // Create the native session first so the bootstrap mutation can be
+            // proven to belong to this exact DSH Workspace.
+            const native = await api('/api/dealpilot/native-session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceId: selectedId, bootstrap: true }) });
+            const nativeSessionId = String(native.sessionId || '');
+            if (!nativeSessionId)
+                throw new Error('DSH 未返回会话 id');
+            const initialized = await api('/api/dealpilot/workspaces/initialize', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceId: selectedId, dshSessionId: nativeSessionId, bootstrap: true }) });
+            // A newly adopted directory keeps its DSH Workspace id; bind the
+            // already-created native session after the directory is prepared.
             selectedId = String(initialized.workspaceId || selectedId);
-            await bindSession(selectedId);
+            await bindSession(selectedId, nativeSessionId);
         }
         catch (err) {
             setStatus(err.message, true);
@@ -961,7 +997,18 @@ function registerDealPilotToolViews(runtime) {
         id: 'dealpilot-route-anchor',
         order: 1000,
     }, () => null));
-    const keys = ['dealpilot_snapshot', 'dealpilot_search', 'dealpilot_write', 'dealpilot_action_transition', 'dealpilot_ingest', 'dealpilot_read', 'dealpilot_propose', 'dealpilot_apply'];
+    const keys = [
+        'dealpilot_snapshot',
+        'dealpilot_search',
+        'dealpilot_whatsapp',
+        'dealpilot_ingest',
+        'dealpilot_read',
+        'dealpilot_record_interpretation',
+        'dealpilot_propose',
+        'dealpilot_apply',
+        'dealpilot_feedback_create',
+        'dealpilot_feedback_submit',
+    ];
     slots.inject('tool.call.toolview', () => function* registerViews() {
         for (const key of keys) {
             yield slots.register({ name: 'tool.call.toolview', key, locale: 'dealpilot' }, (props) => createDealPilotToolRow(React, props));
@@ -988,8 +1035,8 @@ function createDealPilotToolRow(React, props) {
     ];
     if (summary)
         children.push(React.createElement('p', { className: 'dealpilot-toolview-summary', key: 'summary' }, summary));
-    if (meta?.view === 'confirmation') {
-        children.push(React.createElement('p', { className: 'dealpilot-toolview-confirmation', key: 'confirmation' }, '需要用户确认后才会写入工作区。'));
+    if (meta?.view === 'approval' || block?.result?.requires_approval) {
+        children.push(React.createElement('p', { className: 'dealpilot-toolview-approval', key: 'approval' }, '需要用户审阅具体变更及其依据后批准。'));
     }
     else if (items.length) {
         children.push(React.createElement('div', { className: 'dealpilot-toolview-items', key: 'items' }, items.slice(0, 6).map((item, index) => React.createElement('button', { type: 'button', className: 'dealpilot-toolview-item', key: `${item.ref || item.title || index}`, onClick: () => open(item) }, React.createElement('strong', null, item.title || item.deal_title || item.status || '业务记录'), React.createElement('small', null, [item.customer_name, item.funnel_stage, item.risk_level, item.status, item.due_at].filter(Boolean).join(' · '))))));
@@ -1161,5 +1208,4 @@ var productStyles = `
   .dealpilot-nav{display:flex;flex-direction:column;gap:2px;overflow:auto;min-height:0}.dealpilot-nav button{border:0;background:transparent;color:#606a74;text-align:left;border-radius:4px;padding:6px 7px;font:11px inherit;cursor:pointer}.dealpilot-nav button:hover{background:#eef2f5;color:#1e2933}.dealpilot-nav button:focus-visible{outline:2px solid #4d86c3;outline-offset:1px}
   .dealpilot-review-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px}.dealpilot-review-summary div{padding:14px;background:#fff;border:1px solid #e1e5e8;border-radius:6px}.dealpilot-review-summary strong{display:block;font-size:22px;color:#1f6dc8}.dealpilot-review-summary span{display:block;margin-top:5px;color:#737c85;font-size:10px}.dealpilot-review-period{margin:0 0 14px;color:#7b838c;font-size:11px}.dealpilot-form-head{margin-bottom:18px}.dealpilot-form-head h3{font-size:20px;margin:4px 0}.dealpilot-form-head p{color:#747d86;font-size:11px;margin:0;line-height:1.6}.dealpilot-import-form{display:grid;grid-template-columns:160px 1fr;gap:10px;margin-bottom:10px}.dealpilot-import-form label{display:flex;flex-direction:column;gap:5px;color:#6e7780;font-size:10px}.dealpilot-import-form input,.dealpilot-import-form select,.dealpilot-import-view textarea{border:1px solid #d9dee3;border-radius:5px;background:#fff;padding:8px;font:12px inherit;color:#2d343b}.dealpilot-import-view textarea{width:100%;resize:vertical;line-height:1.5}.dealpilot-form-actions{display:flex;gap:8px;margin-top:12px}.dealpilot-form-actions button{height:34px;border:1px solid #ccd4db;border-radius:5px;background:#fff;color:#2e3943;padding:0 12px;font:11px inherit;cursor:pointer}.dealpilot-form-actions button:first-child{background:#216bc1;border-color:#216bc1;color:#fff}.dealpilot-import-result{min-height:90px;margin-top:14px;padding:13px;border:1px solid #e1e5e8;border-radius:6px;background:#fff;color:#68727c;font-size:11px}.dealpilot-import-result strong,.dealpilot-import-result span{display:block;margin-bottom:6px}.dealpilot-import-result ul{margin:8px 0;padding-left:18px}.dealpilot-settings-list{margin:0;border-top:1px solid #e2e6e9;background:#fff}.dealpilot-settings-list div{display:grid;grid-template-columns:120px 1fr;padding:12px;border-bottom:1px solid #edf0f2}.dealpilot-settings-list dt{color:#87909a;font-size:10px}.dealpilot-settings-list dd{margin:0;color:#343d46;font-size:11px}
 `;
-
 return module.exports = { apply, inject }; } });

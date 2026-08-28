@@ -10,12 +10,11 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const shellPath = path.join(root, 'plugin', 'client', 'dealpilot-shell.html');
 const expectedTools = [
   'dealpilot_snapshot',
-  'dealpilot_write',
-  'dealpilot_action_transition',
   'dealpilot_search',
   'dealpilot_whatsapp',
   'dealpilot_ingest',
   'dealpilot_read',
+  'dealpilot_record_interpretation',
   'dealpilot_propose',
   'dealpilot_apply',
   'dealpilot_feedback_create',

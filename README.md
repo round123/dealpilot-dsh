@@ -65,9 +65,9 @@ dsh plugin --profile web add .
 本地开发也可以直接使用仓库目录：
 
 ```powershell
-cd D:\Ai Native\dealpilot-dsh\plugin
+cd "D:\Ai Native\dealpilot-dsh\plugin"
 pnpm install
-pnpm exec tsc
+pnpm run build
 dsh plugin --profile web add .
 ```
 
@@ -78,7 +78,27 @@ dsh web --no-open
 ```
 
 通用文件上传由随 DealPilot 一起安装的 `dsh-file-upload` 提供；办公文件由 `dsh-univer-office`
-导入为隔离工作簿，在会话内预览、编辑、校验并导出。客户资料写回仍经过 DealPilot 的去重、预览和确认流程。
+导入为隔离工作簿，在会话内预览、编辑、校验并导出。资料写回沿着
+evidence → interpretation → change-set → approval → mutation kernel 链路进行。
+
+### 资料写回闭环
+
+```text
+来源归档（原始字节 + manifest）
+  → evidence/v2（逐 sheet/row/column/cell observation，可分页重读）
+  → interpretation/v2（LLM claim、证据引用、未知/冲突和 coverage）
+  → change-set/v2（typed before/after、目标版本、accounting 和 hash）
+  → 宿主展示完整预览并返回 allowed-once
+  → durable approval（绑定 Workspace/session/解释/变更集）
+  → mutation kernel（锁、WAL、staging、幂等、事件和索引）
+  → 可重建的 OKF/snapshot 投影
+```
+
+`dealpilot_ingest` 只归档和转换，不创建业务对象；LLM 必须先读取完整相关
+evidence 并记录 interpretation，才能形成 proposal。调用 `dealpilot_apply`
+后，宿主展示完整变更集；用户返回 `allowed-once` 时，同一次工具执行直接提交
+该 proposal。持久化 `approval_id` 只用于审计、崩溃恢复和内部重试，不作为模型
+需要携带的秘密。任何版本漂移、冲突或未映射内容都会停在可审阅状态。
 
 打开：
 
@@ -105,13 +125,13 @@ DealPilot 页面由原生 DSH Conversation/Composer 加上产品业务视图组�
 - 漏斗、交易生命周期、行动生命周期和活动时间线
 - 搜索、字段筛选、排序和详情面板
 - Univer 工作簿：XLSX/CSV/TSV 导入，单元格编辑、公式、格式、筛选、图表和审阅
-- 客户资料写回：从已审阅工作簿生成导入预览，去重后确认写入
-- 客户/交易/行动的创建、更新、归档和确认流程
-- Action 的完成、取消、阻塞、重开和安排
+- 客户资料写回：从完整 evidence 生成带来源的解释和变更预览
+- Customer、Contact、Deal、Action、Relationship、Note 的 typed change-set
+- 用户批准、幂等提交、事务恢复和索引校验
 - Goal/Workflow 运行时投影
 - Workspace 快照导出和归档
 
-业务视图中的写入操作先展示变更预览，得到明确确认后才写入 OKF，并追加业务事件。
+业务视图中的写入操作先展示逐项 before/after、证据、冲突和未决项，获得明确用户批准后才由 mutation kernel 写入 OKF，并追加业务事件。
 
 ## Agent 和工具
 
@@ -120,15 +140,16 @@ DealPilot 页面由原生 DSH Conversation/Composer 加上产品业务视图组�
 | 工具 | 能力 |
 | --- | --- |
 | `dealpilot_snapshot` | 读取 Today、客户、交易、漏斗、行动和活动快照 |
-| `dealpilot_write` | 创建、更新、归档 Customer/Deal/Action；支持 Customer 合并 |
-| `dealpilot_action_transition` | 完成、取消、阻塞、重开或安排 Action |
-| `dealpilot_ingest` | 将当前 session 附件或 Workspace 文件转换为 canonical import JSON |
-| `dealpilot_import_preview` / `dealpilot_import_commit` | 对 canonical JSON 预览、去重并在确认后写入客户或交易 |
-| `dealpilot_feedback_*` | 生成脱敏反馈草稿，并在确认后打开 GitHub Issue |
 | `dealpilot_search` | 按名称模糊搜索，并按市场、阶段、风险等字段筛选 |
-| `dealpilot_whatsapp` | 保留工具协议；Chrome 扩展实际闭环暂未包含 |
+| `dealpilot_ingest` | 将当前 session 附件或 Workspace 文件归档为无损 `dealpilot.evidence/v2` |
+| `dealpilot_read` | 分页读取 evidence、interpretation 和 OKF 原文 |
+| `dealpilot_record_interpretation` | 保存覆盖完整 observation 的可修正 LLM interpretation |
+| `dealpilot_propose` | 保存带 claim/evidence、版本和 accounting 的 `dealpilot.change-set/v2` |
+| `dealpilot_apply` | 消费绑定具体 change-set 的用户批准并通过事务内核应用 |
+| `dealpilot_feedback_*` | 生成脱敏反馈草稿，并在独立 approval 后生成 GitHub Issue 地址 |
+| `dealpilot_whatsapp` | 记录待审阅的消息草稿 |
 
-所有业务工具都从当前 DealPilot session 读取 Workspace。`dealpilot_ingest` 的 `source` 支持 `session_attachment`（当前 session 的附件）和 `workspace_file`（当前 Workspace 内的相对路径）；路径会经过真实路径边界校验，并复制到 Import Job 专属归档目录。没有绑定 Workspace 时，工具会返回“请先选择 DealPilot Workspace”。高影响操作必须使用一次性确认 token，系统不会自动发送外部消息。
+所有业务工具都从当前 DealPilot session 读取 Workspace。`dealpilot_ingest` 的 `source` 支持 `session_attachment`（当前 session 的附件）和 `workspace_file`（当前 Workspace 内的相对路径）；路径会经过真实路径边界校验，并复制到 Import Job 专属归档目录。没有绑定 Workspace 时，工具会返回“请先选择 DealPilot Workspace”。业务写入只能通过宿主对完整预览返回的 `allowed-once` 执行；持久化 `approval_id` 仅用于审计和内部恢复，解释与证据版本变化会使批准失效。
 
 ## Workspace 数据
 
@@ -139,13 +160,21 @@ Workspace 使用 OKF 文件作为权威数据源，Storage index 用于加速查
 ├── .dsh/workspace.json
 ├── knowledge/
 │   ├── customers/*.md
+│   ├── contacts/*.md
 │   ├── deals/*.md
 │   ├── actions/*.md
-│   ├── contacts/*.md
+│   ├── relationships/*.md
+│   ├── notes/*.md
 │   ├── products/*.md
 │   └── events/business-events.jsonl
-├── sources/inbox/              # 待导入资料
-└── storage/indexes/            # 查询索引和 DealPilot runtime
+├── sources/imports/{job}/      # 原始来源、manifest 和 evidence/v2
+└── storage/
+    ├── interpretations/         # 可重解释的 claim ledger
+    ├── change-sets/              # 不可变 typed 变更集
+    ├── proposals/                # session 绑定的 proposal 状态
+    ├── approvals/                # 用户批准记录
+    ├── transactions/             # WAL 和恢复状态
+    └── indexes/                  # 可重建的查询索引
 ```
 
 真实路径由 DSH Workspace Registry 解析，不返回给浏览器，也不应该写入对话内容。
@@ -158,29 +187,50 @@ Workspace 使用 OKF 文件作为权威数据源，Storage index 用于加速查
 GET  /api/dealpilot/workspaces
 POST /api/dealpilot/workspaces/inspect
 POST /api/dealpilot/workspaces/initialize
+POST /api/dealpilot/workspaces/archive
 POST /api/dealpilot/session
+POST /api/dealpilot/native-session
 GET  /api/dealpilot/session/:id
 POST /api/dealpilot/session/:id/workspace
 GET  /api/dealpilot/sessions?workspaceId=...
 GET  /api/dealpilot/snapshot?workspaceId=...
+GET  /api/dealpilot/memory?workspaceId=...&ref=...
+POST /api/dealpilot/import/source?workspaceId=...
 GET  /api/dealpilot/export?workspaceId=...
 ```
 
-兼容接口 `/api/dealpilot/bootstrap`、`/customers`、`/deals`、`/actions`、`/events`、`/weekly-review`、`/risk` 和 `/stalled` 仍然保留。
+首次初始化是受控 bootstrap：客户端先由 DSH host 创建绑定目标 Workspace 的 native
+session，再携带 `bootstrap=true` 和该 session id 初始化目录；该入口只接受本机
+loopback 请求。初始化完成后，上传、归档和业务会话创建都要求 `x-dealpilot-session-id`
+与 Workspace 一致，切换会话还必须与 URL 中的 session id 一致。native session id
+不能被重复绑定到另一个 Workspace。
+
+只读查询端点 `/api/dealpilot/bootstrap`、`/customers`、`/deals`、`/actions`、`/events`、`/weekly-review`、`/risk` 和 `/stalled` 继续提供给现有工作台视图；它们不提供业务写入能力。
 
 ## 开发和测试
+
+面向开放世界导入、证据保留、LLM 解释、用户批准和可恢复写入的整体设计基线见
+[`docs/DealPilot_Agent_Native_Memory_Architecture_V1.md`](docs/DealPilot_Agent_Native_Memory_Architecture_V1.md)。该文档定义了后续实现的统一协议和验收门槛。
+
+最小协议回归（适合每次修改后快速确认）：
 
 ```powershell
 cd plugin
 pnpm install
-pnpm exec tsc --noEmit
-cd ..
-node --test tests/*.test.mjs
+pnpm run build
+pnpm run test:core
+```
+
+宿主端到端验收：
+
+```powershell
+cd "D:\Ai Native\dealpilot-dsh"
+node --check plugin/lib/index.js
 node --check plugin/client/client.js
 git diff --check
 ```
 
-当前验收覆盖 A2A 工具契约、Workspace/session 持久化、导入预览和去重、写入确认、Customer merge、搜索筛选、Goal/Workflow、20 个 Deal 性能、路径安全、损坏文件容错以及 Playwright 浏览器交互。
+当前核心回归覆盖 A2A 工具契约、Workspace/session 持久化、无损 evidence、解释覆盖率、typed change-set、持久化 approval、事务恢复和路径安全；DSH/Univer/浏览器端到端验证在真实运行环境中执行。
 
 ## 发布
 
@@ -192,8 +242,8 @@ git diff --check
 
 推送到 `master` 会触发 `.github/workflows/build.yml`：
 
-1. 安装依赖并编译 TypeScript。
-2. 运行全部 Node 测试和 Chromium 测试。
+1. 安装依赖并构建 host 与 client 运行包。
+2. 运行核心协议测试；宿主和浏览器端到端测试按发布环境单独执行。
 3. 生成 `dealpilot-dsh-<commit>.tar.gz` 和 `.zip` 构建产物。
 4. 将可直接安装的插件同步到 `dist` 分支。
 
@@ -215,6 +265,6 @@ dealpilot-dsh/
 │   └── client/                 # /dealpilot 页面 bundle
 ├── extension/                  # WhatsApp 扩展（后续能力）
 ├── workspace-template/         # OKF 示例 Workspace
-├── docs/                       # PRD、数据契约和实现规范
-└── tests/                      # Node + Playwright 验收测试
+├── docs/                       # Agent-native memory architecture and import integrity baseline
+└── tests/                      # 核心协议回归；端到端在真实 DSH 中执行
 ```

@@ -114,8 +114,12 @@ export function workspacePathFromId(id: string): string | undefined {
 
 const requiredDirs = [
   'knowledge/customers', 'knowledge/contacts', 'knowledge/deals',
-  'knowledge/actions', 'knowledge/products', 'knowledge/events',
-  'sources/inbox', 'storage/indexes',
+  'knowledge/actions', 'knowledge/products', 'knowledge/relationships',
+  'knowledge/notes', 'knowledge/events',
+  'sources/inbox', 'sources/imports',
+  'storage/indexes', 'storage/import-jobs', 'storage/interpretations',
+  'storage/change-sets', 'storage/proposals', 'storage/transactions',
+  'storage/approvals',
 ];
 
 export async function ensureWorkspace(workspace = defaultWorkspacePath()): Promise<WorkspaceState> {

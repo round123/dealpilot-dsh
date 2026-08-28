@@ -38,6 +38,8 @@ function persistSessions() {
     }
 }
 export async function createDealPilotSession(workspaceId, sessionId = randomUUID()) {
+    if (typeof sessionId !== 'string' || !sessionId.trim())
+        throw new Error('Invalid DealPilot session id');
     const workspacePath = workspacePathFromId(workspaceId);
     if (!workspacePath)
         throw new Error('Invalid workspaceId');
@@ -46,6 +48,16 @@ export async function createDealPilotSession(workspaceId, sessionId = randomUUID
         throw new Error('Workspace 已归档，不能创建 DealPilot 对话');
     if (inspection.status === 'new')
         throw new Error('请先初始化 DealPilot Workspace');
+    // A native DSH session id is also used as the DealPilot binding id. Treat a
+    // repeated request as idempotent only for the same Workspace; never let a
+    // caller overwrite an existing binding by presenting its id with a new
+    // Workspace.
+    const existing = getDealPilotSession(sessionId);
+    if (existing) {
+        if (existing.workspaceId !== workspaceId)
+            throw new Error('该 session 已绑定另一个 Workspace');
+        return existing;
+    }
     const context = {
         sessionId,
         workspaceId,

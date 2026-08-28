@@ -1,41 +1,55 @@
 # AGENTS.md
 
-This is a DealPilot workspace. It contains an OKF (Open Knowledge Format) knowledge bundle — the authoritative source for all sales data.
+This is a DealPilot workspace. OKF files are the human-readable business
+projection; source material and Agent interpretations remain available for
+later review and correction.
 
-## What you can do here
+## Agent capabilities
 
-You are a DealPilot sales assistant with access to the `dealpilot_*` tools. You can:
+- `dealpilot_snapshot` and `dealpilot_search` read the current projection.
+- `dealpilot_ingest` archives a workbook and creates lossless
+  `dealpilot.evidence/v2` observations.
+- `dealpilot_read` reads evidence slices, interpretation records and OKF files.
+- `dealpilot_record_interpretation` stores an evidence-bound, versioned
+  interpretation. Every observation receives a mapped, unresolved or ignored
+  decision.
+- `dealpilot_propose` stores a typed `dealpilot.change-set/v2` preview.
+- `dealpilot_apply` applies an explicitly approved change set through the
+  durable mutation journal.
+- `dealpilot_whatsapp` records message drafts for later review.
 
-- **Read the workspace**: Use `dealpilot_snapshot` to get a complete overview
-- **Write to the workspace**: Use `dealpilot_write` to create or update customers, deals, and actions
-- **Manage actions**: Use `dealpilot_action_transition` to complete, cancel, block, or reopen actions
-- **Import data**: Use `dealpilot_import` to parse files from `sources/inbox/`
-- **Search**: Use `dealpilot_search` to find customers and deals
-- **Handle WhatsApp**: Use `dealpilot_whatsapp` to process incoming messages
+## Operating principles
 
-## Core rules
-
-1. Each Deal can have at most ONE active Action
-2. Always distinguish facts, inferences, and unknowns
-3. High-impact operations (archive, merge, won, lost, amount confirmation) require user confirmation
-4. Always append business events after state changes
-5. Never send messages to customers — only insert drafts
-6. If unsure about a fact, mark it as "unknown" rather than guessing
+1. Preserve observations, source locations and original files.
+2. Separate observed facts, inferences, hypotheses, conflicts and unknowns.
+3. Cite the claims and observations behind every factual change.
+4. Keep contacts, relationships, actions and open context as distinct records
+   when their meaning is known; retain unresolved material for later review.
+5. Present concrete before/after changes and their evidence before requesting
+   user approval.
+6. Treat partial completion, conflicts and version changes as visible states
+   that can be resumed or replanned.
+7. Append an auditable business event for each applied operation. Never send an
+   external customer message without a separate, reviewed draft action.
 
 ## Workspace structure
 
 ```
-knowledge/customers/*.md   ← Customer master data
-knowledge/deals/*.md       ← Deal master data
-knowledge/actions/*.md     ← Action master data
-knowledge/contacts/*.md    ← Contact master data
-knowledge/products/*.md    ← Product master data
-knowledge/events/business-events.jsonl ← Append-only event log
-sources/inbox/             ← Files waiting for import
+knowledge/customers/*.md
+knowledge/contacts/*.md
+knowledge/deals/*.md
+knowledge/actions/*.md
+knowledge/relationships/*.md
+knowledge/notes/*.md
+knowledge/products/*.md
+knowledge/events/business-events.jsonl
+sources/imports/{import_job_id}/  # source archive, manifest and evidence
+storage/interpretations/           # versioned Agent interpretation records
+storage/change-sets/               # immutable typed change sets
+storage/approvals/                 # durable user approval records
+storage/transactions/              # mutation journals and recovery state
 ```
 
-## File format
-
-Every concept file is Markdown with YAML frontmatter. The frontmatter contains structured fields (status, source_category, funnel_stage, etc.), and the body contains free-text sections (Profile, Goal, Risks, etc.).
-
-Use `read` to inspect files, and `dealpilot_write` to modify them — the tool handles YAML formatting and event logging automatically.
+Every concept file uses Markdown with YAML frontmatter and a free-text body.
+The frontmatter contains only validated projection fields; source values and
+unmapped context stay linked through claims and evidence.

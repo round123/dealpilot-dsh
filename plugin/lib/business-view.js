@@ -63,36 +63,15 @@ export function searchPresentation(value) {
         ...(items.length === 1 ? { item: items[0] } : {}),
     };
 }
-export function writePresentation(args, value) {
+export function approvalPresentation(value) {
     const result = resultMeta(value);
-    if (result.requires_confirmation)
-        return {
-            product: 'dealpilot', view: 'confirmation', title: '等待确认：销售工作区写入',
-            preview: compact(result.preview || {}),
-        };
-    const item = entityItem({ ...args?.fields, ...result, entity: args?.entity });
-    const view = args?.entity === 'customer' ? 'customer-card' : args?.entity === 'action' ? 'action-list' : 'deal-detail';
-    return { product: 'dealpilot', view, title: result.title || '销售对象已更新', count: 1, item };
-}
-export function actionPresentation(args, value) {
-    const result = resultMeta(value);
-    if (result.requires_confirmation)
-        return {
-            product: 'dealpilot', view: 'confirmation', title: '等待确认：行动状态变更',
-            preview: compact(result.preview || {}),
-        };
     return {
-        product: 'dealpilot', view: 'action-list', title: '跟进任务状态已更新', count: 1,
-        item: entityItem({ ...args, ...result, ref: result.ref || args?.action_ref, status: result.newStatus || result.status }),
+        product: 'dealpilot', view: 'approval', title: '等待用户批准',
+        preview: compact(result.preview || {}),
     };
 }
 export function importPresentation(_args, value) {
     const result = resultMeta(value);
-    if (result.requires_confirmation)
-        return {
-            product: 'dealpilot', view: 'confirmation', title: '等待确认：批量导入',
-            preview: compact(result.preview || {}),
-        };
     const items = Array.isArray(result.entities) ? result.entities.map(entityItem).slice(0, 20) : [];
     return {
         product: 'dealpilot', view: 'import-result', title: '导入结果', count: Number(result.created || items.length),

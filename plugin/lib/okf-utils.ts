@@ -4,6 +4,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as yaml from 'js-yaml';
+import { randomUUID } from 'node:crypto';
 import { resolveWorkspacePath } from './workspace-manager.js';
 import { currentWorkspacePath } from './workspace-context.js';
 
@@ -84,13 +85,79 @@ export async function appendBusinessEvent(workspace: string, event: BusinessEven
   const eventsPath = path.join(workspace, 'knowledge', 'events', 'business-events.jsonl');
   await fs.mkdir(path.dirname(eventsPath), { recursive: true });
   const line = JSON.stringify(event) + '\n';
-  await fs.appendFile(eventsPath, line, 'utf-8');
+  const handle = await fs.open(eventsPath, 'a');
+  try {
+    await handle.writeFile(line, 'utf-8');
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
 }
 
 // ── Storage Index ───────────────────────────────────────────────────────────
 
 function storageRoot(workspace: string): string {
   return path.join(workspace, 'storage', 'indexes');
+}
+
+async function readIndexBytes(indexPath: string): Promise<string | undefined> {
+  try {
+    return await fs.readFile(indexPath, 'utf-8');
+  } catch (error: any) {
+    if (error?.code !== 'ENOENT') throw error;
+    // A process can stop after the old index was moved aside on Windows. The
+    // verified before-image is preferable to pretending the index is empty.
+    try { return await fs.readFile(`${indexPath}.before.bak`, 'utf-8'); }
+    catch (backupError: any) { if (backupError?.code !== 'ENOENT') throw backupError; return undefined; }
+  }
+}
+
+/** Replace a derived index durably while retaining a recoverable before-image. */
+async function atomicReplaceIndex(indexPath: string, content: string): Promise<void> {
+  await fs.mkdir(path.dirname(indexPath), { recursive: true });
+  const temporary = `${indexPath}.${process.pid}.${randomUUID()}.tmp`;
+  const backup = `${indexPath}.before.bak`;
+  const handle = await fs.open(temporary, 'wx', 0o600);
+  try {
+    await handle.writeFile(content, 'utf-8');
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  try {
+    await fs.rename(temporary, indexPath);
+    try { await fs.rm(backup, { force: true }); } catch {}
+    return;
+  } catch (error: any) {
+    if (!['EEXIST', 'EPERM', 'ENOTEMPTY'].includes(error?.code)) {
+      try { await fs.rm(temporary, { force: true }); } catch {}
+      throw error;
+    }
+  }
+  let moved = false;
+  try {
+    try { await fs.rm(backup, { force: true }); } catch {}
+    try {
+      const stat = await fs.lstat(indexPath);
+      if (stat.isSymbolicLink()) throw new Error('Storage index 不能是符号链接');
+      await fs.rename(indexPath, backup);
+      moved = true;
+    } catch (moveError: any) {
+      if (moveError?.code !== 'ENOENT') throw moveError;
+    }
+    try {
+      await fs.rename(temporary, indexPath);
+    } catch (replaceError) {
+      if (moved) {
+        try { await fs.rename(backup, indexPath); } catch {}
+      }
+      throw replaceError;
+    }
+    try { await fs.rm(backup, { force: true }); } catch {}
+  } catch (error) {
+    try { await fs.rm(temporary, { force: true }); } catch {}
+    throw error;
+  }
 }
 
 export async function readStorageIndex(
@@ -101,12 +168,10 @@ export async function readStorageIndex(
   const indexPath = path.join(indexDir, `${entity}.json`);
 
   try {
-    const raw = await fs.readFile(indexPath, 'utf-8');
+    const raw = await readIndexBytes(indexPath);
+    if (raw === undefined) return entity === 'snapshot' ? null : [];
     return JSON.parse(raw);
   } catch (err: any) {
-    if (err.code === 'ENOENT') {
-      return entity === 'snapshot' ? null : [];
-    }
     throw err;
   }
 }
@@ -125,11 +190,11 @@ export async function updateStorageIndex(
 
   let entries: IndexEntry[] = [];
   try {
-    const raw = await fs.readFile(indexPath, 'utf-8');
-    entries = JSON.parse(raw);
+    const raw = await readIndexBytes(indexPath);
+    entries = raw === undefined ? [] : JSON.parse(raw);
     if (!Array.isArray(entries)) entries = [];
   } catch (err: any) {
-    if (err.code !== 'ENOENT') throw err;
+    throw err;
   }
 
   const idx = entries.findIndex(e => e.ref === data.ref);
@@ -139,8 +204,7 @@ export async function updateStorageIndex(
     entries.push(data);
   }
 
-  await fs.mkdir(path.dirname(indexPath), { recursive: true });
-  await fs.writeFile(indexPath, JSON.stringify(entries, null, 2) + '\n', 'utf-8');
+  await atomicReplaceIndex(indexPath, JSON.stringify(entries, null, 2) + '\n');
 }
 
 // ── Ref Generation ──────────────────────────────────────────────────────────

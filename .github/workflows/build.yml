@@ -31,12 +31,8 @@ jobs:
         run: pnpm install --frozen-lockfile
         working-directory: plugin
 
-      - name: Install Playwright browser
-        run: pnpm exec playwright install --with-deps chromium
-        working-directory: plugin
-
       - name: Compile TypeScript
-        run: pnpm exec tsc
+        run: pnpm run build
         working-directory: plugin
 
       - name: Verify clean plugin install
@@ -50,7 +46,8 @@ jobs:
           (cd "$verify_dir" && node --input-type=module -e "import('./lib/okf-utils.js').then(() => console.log('standalone plugin import OK'))")
 
       - name: Run tests
-        run: node --test tests/*.test.mjs
+        run: pnpm run test:core
+        working-directory: plugin
 
       - name: Assemble distributable
         shell: bash

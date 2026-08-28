@@ -10,7 +10,7 @@ export function registerWhatsappTool(ctx, harness) {
 
 支持三种操作：
 - pull_messages: 拉取指定对话的最新消息
-- analyze: 分析消息内容，关联客户和交易，更新状态
+- analyze: 提取待核对的消息信号并关联可能的客户和交易，不修改业务状态
 - prepare_draft: 基于分析结果生成回复草稿
 
 注意：此工具依赖 Chrome 扩展从 WhatsApp Web DOM 提取消息。

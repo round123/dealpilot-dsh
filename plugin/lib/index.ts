@@ -103,7 +103,8 @@ async function createDshSession(req: any, workspacePath: string): Promise<{ sess
 
 export function apply(ctx: Record<string, any>) {
   installDealPilotPreset();
-  if (!ctx.univer && typeof ctx.plugin === 'function') {
+  const existingUniver = ctx.reflect?.get?.('univer', false);
+  if (!existingUniver && typeof ctx.plugin === 'function') {
     try { ctx.plugin(applyUniverOffice); } catch (error) { console.warn('[dealpilot] Univer provider activation deferred:', error); }
   }
   // ── Register business capabilities ───────────────────────────────────────
@@ -120,9 +121,9 @@ export function apply(ctx: Record<string, any>) {
     const registerCanonical = (serviceCtx: any) => {
       if (canonicalRegistered) return;
       canonicalRegistered = true;
-      registerCanonicalImportTools(toolCtx, harness, serviceCtx?.univer || ctx.univer);
+      registerCanonicalImportTools(toolCtx, harness, serviceCtx?.univer || ctx.reflect?.get?.('univer', false));
     };
-    if (ctx.univer) registerCanonical(ctx);
+    if (ctx.reflect?.get?.('univer', false)) registerCanonical(ctx);
     else if (typeof ctx.inject === 'function') ctx.inject(['univer'], registerCanonical);
     else registerCanonical(ctx);
     registerAgentMemoryTools(toolCtx, harness);

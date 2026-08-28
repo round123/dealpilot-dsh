@@ -113,7 +113,8 @@ async function createDshSession(req, workspacePath) {
 }
 export function apply(ctx) {
     installDealPilotPreset();
-    if (!ctx.univer && typeof ctx.plugin === 'function') {
+    const existingUniver = ctx.reflect?.get?.('univer', false);
+    if (!existingUniver && typeof ctx.plugin === 'function') {
         try {
             ctx.plugin(applyUniverOffice);
         }
@@ -136,9 +137,9 @@ export function apply(ctx) {
             if (canonicalRegistered)
                 return;
             canonicalRegistered = true;
-            registerCanonicalImportTools(toolCtx, harness, serviceCtx?.univer || ctx.univer);
+            registerCanonicalImportTools(toolCtx, harness, serviceCtx?.univer || ctx.reflect?.get?.('univer', false));
         };
-        if (ctx.univer)
+        if (ctx.reflect?.get?.('univer', false))
             registerCanonical(ctx);
         else if (typeof ctx.inject === 'function')
             ctx.inject(['univer'], registerCanonical);

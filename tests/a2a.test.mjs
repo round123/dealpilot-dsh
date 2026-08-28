@@ -200,6 +200,7 @@ test('route client mounts the persistent business context and full workbench in 
     assert.match(await page.locator('.dealpilot-board-detail').textContent(), /关系阶段/);
     assert.match(await page.locator('.dealpilot-board-detail').textContent(), /关键事实/);
     assert.match(await page.locator('.dealpilot-board-detail').textContent(), /时间线/);
+    await page.getByText(/Industrial automation buyer/).waitFor({ state: 'visible' });
     assert.match(await page.locator('.dealpilot-board-detail').textContent(), /Industrial automation buyer/);
     assert.doesNotMatch(await page.locator('.dealpilot-board-detail').textContent(), /Cached summary/);
     assert.equal(await page.getByLabel('排序当前视图').isVisible(), true);

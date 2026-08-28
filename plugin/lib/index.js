@@ -34,7 +34,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEALPILOT_BLOCKED_TOOLS = new Set([
     'write', 'edit', 'delete', 'remove', 'move', 'copy', 'mkdir', 'rm',
     'read', 'glob', 'grep', 'write_file', 'edit_file', 'delete_file',
-    'dealpilot_write', 'dealpilot_action_transition',
+    'dealpilot_import', 'dealpilot_write', 'dealpilot_action_transition',
     'univer_new', 'univer_unit', 'univer_import', 'univer_execute', 'univer_worktree',
 ]);
 function installDealPilotCapabilityGuard(ctx) {

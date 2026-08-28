@@ -50,7 +50,8 @@ test('business tools require a bound DealPilot session and use its workspace', a
 
     const { apply } = await import('../plugin/lib/index.js');
     const registered = [];
-    apply({ tools: { register: (tool) => registered.push(tool) } });
+    const guards = [];
+    apply({ tools: { register: (tool) => registered.push(tool), guard: (guard) => { guards.push(guard); return () => {}; } } });
     const snapshot = registered.find((tool) => tool.name === 'dealpilot_snapshot');
     await assert.rejects(() => snapshot.execute({}, { agent: { id: 'unbound-session' } }), /请先选择 DealPilot Workspace/);
     const value = await snapshot.execute({}, { agent: { id: context.sessionId } });
@@ -59,6 +60,11 @@ test('business tools require a bound DealPilot session and use its workspace', a
     // mutations must enter through a typed, evidence-bound change set.
     assert.equal(registered.some((tool) => tool.name === 'dealpilot_write'), false);
     assert.equal(registered.some((tool) => tool.name === 'dealpilot_action_transition'), false);
+    assert.equal(registered.some((tool) => tool.name === 'dealpilot_import'), false);
+    assert.equal(guards.length, 1);
+    for (const name of ['dealpilot_import', 'dealpilot_write', 'dealpilot_action_transition']) {
+      assert.match(guards[0]({ name, agent: { id: context.sessionId } }), new RegExp(`cannot call ${name}`));
+    }
     const propose = registered.find((tool) => tool.name === 'dealpilot_propose');
     await assert.rejects(
       () => propose.execute({ change_set: { schema: 'dealpilot.change-set/v1' } }, { agent: { id: context.sessionId } }),

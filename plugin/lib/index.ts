@@ -65,9 +65,13 @@ function installDealPilotCapabilityGuard(ctx: Record<string, any>): void {
 }
 
 async function readDshFrontendIndex(req?: any): Promise<string> {
-  if (req?.headers?.host) {
+  // Fetch the host-generated page through loopback. The public Host header may
+  // point back through a reverse proxy and return an HTML shell without the
+  // inline ModuleLoader bootstrap facade.
+  const localPort = Number(req?.socket?.localPort || process.env.PORT || 3080);
+  if (Number.isInteger(localPort) && localPort > 0) {
     try {
-      const response = await fetch(`http://${req.headers.host}/`);
+      const response = await fetch(`http://127.0.0.1:${localPort}/`);
       if (response.ok) return await response.text();
     } catch {}
   }

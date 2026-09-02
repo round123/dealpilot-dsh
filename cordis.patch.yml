@@ -1,0 +1,6 @@
+# DealPilot DSH Cordis patch.
+# Registers evidence ingestion and reading, interpretation recording,
+# reviewable change sets, scoped approval, and transactional application.
+- insert:
+    - id: dealpilot
+      name: 'dealpilot-dsh'

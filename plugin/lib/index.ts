@@ -6,6 +6,7 @@ import * as fs from 'node:fs/promises';
 import { copyFileSync, mkdirSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import * as path from 'node:path';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { buildSnapshot } from './snapshot.js';
 import { ensureWorkspace, listWorkspaces, inspectWorkspace, workspacePathFromId, registerWorkspacePath, defaultWorkspacePath } from './workspace-manager.js';
@@ -35,6 +36,7 @@ import { apply as applyUniverOffice } from 'dsh-univer-office';
 export const inject = ['tools', 'univer'];
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
 
 // A DealPilot session has a narrower authority than the host's general tool
 // catalog.  Preset visibility is advisory: globally installed filesystem or
@@ -69,10 +71,37 @@ async function readDshFrontendIndex(req?: any): Promise<string> {
       if (response.ok) return await response.text();
     } catch {}
   }
-  const candidates = [
-    path.resolve(path.dirname(process.argv[1] || ''), '..', 'node_modules', '@deepseek-ai', 'dsh-web-frontend', 'dist', 'index.html'),
-    path.resolve(path.dirname(process.argv[1] || ''), '..', 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai', 'dsh-web-frontend', 'dist', 'index.html'),
+  const candidates = new Set<string>();
+  const addCandidate = (value?: string) => { if (value) candidates.add(path.resolve(value)); };
+  addCandidate(process.env.DSH_FRONTEND_INDEX);
+
+  // Resolve the frontend from the same module graph as the host. This covers
+  // local installs, npm globals, and DSH's nested production dependency.
+  const searchPaths = [
+    __dirname,
+    path.dirname(process.argv[1] || ''),
+    path.dirname(process.execPath),
+    path.join(path.dirname(process.execPath), 'node_modules'),
+    path.join(path.dirname(process.execPath), 'lib', 'node_modules'),
+    ...(process.env.NODE_PATH || '').split(path.delimiter).filter(Boolean),
   ];
+  for (const request of ['@deepseek-ai/dsh-web-frontend', '@deepseek-ai/dsh-web-frontend/package.json']) {
+    try {
+      const resolved = require.resolve(request, { paths: searchPaths });
+      let current = path.dirname(resolved);
+      for (let depth = 0; depth < 6; depth += 1) {
+        addCandidate(path.join(current, 'dist', 'index.html'));
+        addCandidate(path.join(current, 'index.html'));
+        const parent = path.dirname(current);
+        if (parent === current) break;
+        current = parent;
+      }
+    } catch { /* the next installation layout may still resolve */ }
+  }
+
+  const cliDir = path.dirname(process.argv[1] || '');
+  addCandidate(path.resolve(cliDir, '..', 'node_modules', '@deepseek-ai', 'dsh-web-frontend', 'dist', 'index.html'));
+  addCandidate(path.resolve(cliDir, '..', 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai', 'dsh-web-frontend', 'dist', 'index.html'));
   for (const candidate of candidates) { try { return await fs.readFile(candidate, 'utf-8'); } catch {} }
   throw new Error('DSH web frontend index.html was not found');
 }
